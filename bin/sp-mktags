@@ -1,0 +1,106 @@
+#!/bin/sh
+
+# Serval Project tags file generator for ctags(1) and cscope(1).
+# Copyright 2012 Andrew Bettison
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+# Generates useful ctags(1) and cscope(1) files for all the Git repositories
+# that contain the given directory.  Creates 'tags' and 'cscope.out' files in
+# the roots of each repository.
+
+tmp="/tmp/${0##*/}-$$"
+trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
+
+# Check if ctags(1) command is present.
+have_ctags=false
+if ctags --version >/dev/null 2>&1; then
+   have_ctags=true
+fi
+
+# Check if cscope(1) command is present.
+have_cscope=false
+if cscope -V >/dev/null 2>&1; then
+   have_cscope=true
+fi
+
+# Operate on the current working directory if no path given as arg1.
+if [ $# -ne 0 ]; then
+   if [ -d "$1" ]; then
+      cd "$1" >/dev/null || exit 1
+   else
+      case "$1" in
+      */*) cd "${1%/*}" >/dev/null || exit 1;;
+      esac
+   fi
+fi
+
+# Find the current Android NDK build API version, if there is one.
+ndk="$(type ndk-build)"
+ndk_include=
+case "$ndk" in
+'ndk-build is /'*)
+   ndk="${ndk#ndk-build is }"
+   ndk="${ndk%/ndk-build}"
+   project_dir="$PWD"
+   while [ -d "$project_dir" ]; do
+      propfile="$project_dir/project.properties"
+      if [ -r "$propfile" ]; then
+         target=$(sed -n '/^target=/s///p' "$propfile")
+         if [ -n "$target" ]; then
+            ndk_include="$ndk/platforms/$target/arch-arm/usr/include"
+            if [ -d "$ndk_include" ]; then
+               break
+            else
+               echo "${0##*/}: directory $ndk_include does not exist -- omitting NDK header files"
+               ndk_include=
+            fi
+         else
+            echo "${0##*/}: $propfile contains no target= line -- omitting NDK header files"
+         fi
+      fi
+      project_dir="${project_dir%/*}"
+   done
+   if [ -z "$project_dir" ]; then
+      echo "${0##*/}: no project.properties file -- omitting NDK header files"
+   fi
+   ;;
+*)
+   echo "${0##*/}: ndk-build is not in \$PATH -- omitting NDK header files"
+   ;;
+esac
+
+while [ "$PWD" != / ]; do
+   if [ -r ".git/config" ]; then
+      echo "$PWD"
+      sp-ls-files | grep '\.[ch]$' >"$tmp-c"
+      sp-ls-files | grep '\.java$' >"$tmp-j"
+      if [ -n "$ndk_include" ]; then
+         echo "   find NDK header files in $ndk_include"
+         find "$ndk_include" -type f -name '*.h' >>"$tmp-c"
+      fi
+      cat "$tmp-c" "$tmp-j" >"$tmp-cj"
+      if $have_ctags; then
+         echo "   ctags:" $(cat "$tmp-cj" | wc -l) files
+         ctags -L "$tmp-cj" -f tags --tag-relative=yes
+      fi
+      if $have_cscope; then
+         echo "   cscope:" $(cat "$tmp-c" | wc -l) files
+         cscope -fcscope.out -b -i"$tmp-c"
+      fi
+   fi
+   cd .. >/dev/null
+done
+

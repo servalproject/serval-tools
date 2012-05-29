@@ -1,0 +1,106 @@
+#!/bin/sh
+
+# Serval Project Git source file list utility
+# Copyright 2012 Andrew Bettison
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+
+# A wrapper around git ls-files that crosses submodule boundaries.
+
+submodules=false
+opt_submodules=
+while [ $# -ne 0 ]
+do
+   case "$1" in
+   --submodules|-S) opt_submodules="$1"; submodules=true; shift;;
+   --no-submodules) opt_submodules="$1"; submodules=false; shift;;
+   *) break;;
+   esac
+done
+
+# Find all enclosing Git repos of the given path (file or directory), from
+# smallest (probably a submodule) to the largest.
+find_git_roots() {
+   (
+      relative=false
+      case "$1" in
+      --relative) relative=true; shift;;
+      esac
+      if [ $# -ne 0 ]; then
+         if [ -d "$1" ]; then
+            cd "$1" >/dev/null || exit 1
+         else
+            case "$1" in
+            */*) cd "${1%/*}" >/dev/null || exit 1;;
+            esac
+         fi
+      fi
+      REL=
+      while [ "$PWD" != / ]; do
+         if [ -r ".git/config" ]; then
+            if $relative; then echo "$REL"; else echo "$PWD"; fi
+         fi
+         REL="$REL${REL:+/}.."
+         cd .. >/dev/null || exit 1
+      done
+   )
+}
+
+# Assume that all paths given on the command line belong within the same Git
+# repo, so use the first arg to find the repo root.  If no paths specified on
+# the command line, then use the Git repo containing the current directory.
+if [ $# -eq 0 ]; then
+   if $submodules; then
+      git_root=$(find_git_roots --relative "$arg" | sed -n '$p')
+      export _prefix="${git_root:+$git_root/}"
+      cd "$git_root" >/dev/null || exit 1
+      git ls-files --exclude-standard --cached --other | awk '{ print ENVIRON["_prefix"] $0 }'
+      git submodule foreach --quiet --recursive git ls-files --exclude-standard --cached --other '|' 'path="$path"' awk \''{ print ENVIRON["_prefix"] ENVIRON["path"] "/" $0 }'\' #'
+   else
+      git ls-files --exclude-standard --cached --other
+   fi
+else
+   if $submodules; then
+      echo "${0##*/}: cannot use $opt_submodules with arguments" >&2
+      exit 1
+   fi
+   for arg; do
+      cwd_git_root=$(find_git_roots | sed -n '1p')
+      git_root=$(find_git_roots "$arg" | sed -n '1p')
+      export _prefix=
+      if [ "$git_root" != "$cwd_git_root" ]; then
+         if [ -d "$arg" ]; then
+            cd "$arg" >/dev/null || exit 1
+            export _prefix="$arg/"
+            arg=.
+         else
+            case "$arg" in
+            */*)
+               cd "${arg%/*}" >/dev/null || exit 1
+               export _prefix="${arg%/*}/"
+               arg="${arg##*/}"
+               ;;
+            *)
+               echo "${0##*/}: that's wierd: arg='$arg'" >&2
+               exit 1
+               ;;
+            esac
+         fi
+      fi
+      eval git ls-files --exclude-standard --cached --other "$arg" | awk '{ print ENVIRON["_prefix"] $0 }'
+   done
+fi
+exit 0
