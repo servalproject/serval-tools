@@ -21,8 +21,20 @@
 # that contain the given directory.  Creates 'tags' and 'cscope.out' files in
 # the roots of each repository.
 
-tmp="/tmp/${0##*/}-$$"
-trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
+usage() {
+   echo "Usage: ${0##*/} [-a|--all]"
+}
+
+opt_all=false
+while [ $# -ne 0 ]; do
+   case "$1" in
+   --) shift; break;;
+   --all | -a ) opt_all=true; shift;;
+   --help ) usage; exit 0;;
+   -*) echo "${0##*/}: unsupported option: $1" >&2; usage >&2; exit 1;;
+   *) echo "${0##*/}: unsupported argument: $1" >&2; usage >&2; exit 1;;
+   esac
+done
 
 # Check if ctags(1) command is present.
 have_ctags=false
@@ -82,25 +94,52 @@ case "$ndk" in
    ;;
 esac
 
+git_root=
 while [ "$PWD" != / ]; do
    if [ -r ".git/config" ]; then
-      echo "$PWD"
-      sp-ls-files | grep '\.[ch]$' >"$tmp-c"
-      sp-ls-files | grep '\.java$' >"$tmp-j"
-      if [ -n "$ndk_include" ]; then
-         echo "   find NDK header files in $ndk_include"
-         find "$ndk_include" -type f -name '*.h' >>"$tmp-c"
-      fi
-      cat "$tmp-c" "$tmp-j" >"$tmp-cj"
-      if $have_ctags; then
-         echo "   ctags:" $(cat "$tmp-cj" | wc -l) files
-         ctags -L "$tmp-cj" -f tags --tag-relative=yes
-      fi
-      if $have_cscope; then
-         echo "   cscope:" $(cat "$tmp-c" | wc -l) files
-         cscope -fcscope.out -b -i"$tmp-c"
-      fi
+      git_root="$PWD"
+      $opt_all || break
    fi
    cd .. >/dev/null
 done
 
+if [ ! -d "$git_root" ]; then
+   echo "${0##*/}: no Git repository here!" >&2
+   exit 1
+fi
+
+tmp="/tmp/${0##*/}-$$"
+trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
+
+mktags() {
+   echo "$PWD"
+   sp-ls-files >"$tmp-f"
+   grep '\.[ch]$' "$tmp-f" >"$tmp-c"
+   grep '\.java$' "$tmp-f" >"$tmp-j"
+   if [ -s "$tmp-c" -a -n "$ndk_include" ]; then
+      echo "   find header files in $ndk_include"
+      find "$ndk_include" -type f -name '*.h' >>"$tmp-c"
+   fi
+   cat "$tmp-c" "$tmp-j" >"$tmp-cj"
+   if $have_ctags; then
+      echo "   ctags:" $(cat "$tmp-cj" | wc -l) files
+      ctags -L "$tmp-cj" -f tags --tag-relative=yes
+   fi
+   if $have_cscope && [ -s "$tmp-c" ]; then
+      echo "   cscope:" $(cat "$tmp-c" | wc -l) files
+      cscope -fcscope.out -b -i"$tmp-c"
+   fi
+}
+
+cd "$git_root" >/dev/null || exit 1
+mktags
+
+if $opt_all; then
+   for path in $(git submodule foreach --quiet echo '$path'); do
+      (
+         cd "$path" >/dev/null || exit 1
+         mktags "$path"
+         exit 0
+      ) || exit 1
+   done
+fi
