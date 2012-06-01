@@ -34,17 +34,20 @@ working directory.
 
 The options recognised by sp-ls-files are:
 
-*  **`-S`** or **`--submodules`** cause sp-ls-files to list all files in the
-   current outermost enclosing Git repository, including in all submodules of
-   that repository.  For example, if you are inside the batphone/jni/serval-dna
-   submodule, `sp-ls-files -S` will list all files in the `batphone` repository
-   and all of its submodules, including jni/serval-dna itself.
+*  **`-S`** or
+   **`--submodules`**
+   Cause sp-ls-files to list all files in the current outermost enclosing Git
+   repository, including in all submodules of that repository.  For example, if
+   you are inside the batphone/jni/serval-dna submodule, `sp-ls-files -S` will
+   list all files in the `batphone` repository and all of its submodules,
+   including jni/serval-dna itself.
 
-*  **`--no-submodules`** (the default), causes sp-ls-files to treat its
-   arguments as path names of files or directories, and invokes *git ls-files*
-   on each argument in turn after changing directory to the root of the Git
-   repository containing the path.  This allows you to list files within
-   submodules of the current repository, which *git ls-files* does not support.
+*  **`--no-submodules`** (the default)
+   Causes sp-ls-files to treat its arguments as path names of files or
+   directories, and invokes *git ls-files* on each argument in turn after
+   changing directory to the root of the Git repository containing the path.
+   This allows you to list files within submodules of the current repository,
+   which *git ls-files* does not support.
 
    If no arguments are given, then sp-ls-files behaves just like *git ls-files*
    with no arguments, ie, lists the files in the current (innermost) Git
@@ -71,9 +74,14 @@ more information:
 sp-grep recognises the following special options that it does not pass through
 to *grep*:
 
-*  **`--java`**  Only search in files ending in `.java`
-*  **`--xml`**  Only search in files ending in `.xml`
-*  **`--c`**  Only search in files ending in `.h` or `.c`
+*  **`--java`**
+   Only search in files ending in `.java`
+
+*  **`--xml`**
+   Only search in files ending in `.xml`
+
+*  **`--c`**
+   Only search in files ending in `.h` or `.c`
 
 These options are cumulative, eg, giving `--java --xml` will search in all Java
 and XML files.
