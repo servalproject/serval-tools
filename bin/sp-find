@@ -38,4 +38,4 @@ done
 
 sp-ls-files --submodules --exclude-standard --other --directory --ignored >"$tmp-1"
 [ $# -eq 0 ] && set -- -print
-exec find $dirs ! \( \( -false $(sed -e "s/^/-o -samefile /" "$tmp-1") \) -prune \) -a \( "$@" \)
+find $dirs ! \( \( -type d -name .git $(sed -e "s/^/-o -samefile /" "$tmp-1") \) -prune \) -a \( "$@" \)
