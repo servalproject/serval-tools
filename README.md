@@ -34,8 +34,7 @@ working directory.
 
 The options recognised by sp-ls-files are:
 
-*  **`-S`** or
-   **`--submodules`**
+*  **`-S`** or **`--submodules`**
    Cause sp-ls-files to list all files in the current outermost enclosing Git
    repository, including in all submodules of that repository.  For example, if
    you are inside the batphone/jni/serval-dna submodule, `sp-ls-files -S` will
@@ -63,25 +62,27 @@ intermediate build files.  It was originally developed to stop sp-grep from
 matching twice in the serval-dna repository, which concatenates all of its C
 header and source files into `serval.c` while building.
 
+sp-find invokes *sp-ls-files --submodules* to discover all the files that Git
+ignores.
+
+_Known issue_: sp-find does not deal with path names that contain spaces,
+either on the command line or in the output from *sp-ls-files*.
+
 ### `sp-grep`
 
 Searches all files in the current outermost enclosing Git repository for a
-given pattern.  All arguments are passed directly to the `grep` command.  For
-more information:
+given pattern, analogous to the **find -type f | xargs grep** idiom, except
+that it uses *sp-ls-files --submodules* instead of *find*(1).  All arguments
+are passed directly to the `grep` command.  For more information:
 
     sp-grep --help
 
 sp-grep recognises the following special options that it does not pass through
 to *grep*:
 
-*  **`--java`**
-   Only search in files ending in `.java`
-
-*  **`--xml`**
-   Only search in files ending in `.xml`
-
-*  **`--c`**
-   Only search in files ending in `.h` or `.c`
+*  **`--java`**  Only search in files ending in `.java`
+*  **`--xml`**   Only search in files ending in `.xml`
+*  **`--c`**     Only search in files ending in `.h` or `.c`
 
 These options are cumulative, eg, giving `--java --xml` will search in all Java
 and XML files.
@@ -98,9 +99,9 @@ Java source files in the Serval source code.
 
 ### `sp-mktags`
 
-Generates **tags** and **cscope.out** files in the root directory of the
-current Git repository.  These tags make navigating C and Java source code very
-easy in Vim and other editors that support ctags and cscope.  For more
+Generates **tags** and **cscope.out** index files in the root directory of the
+current Git repository.  These indices make navigating C and Java source code
+very easy in Vim and other editors that support ctags and cscope.  For more
 information:
 
     sp-mktags --help
@@ -136,7 +137,7 @@ diff windows to reveal changes.
 
 To use the plugin, check out the **serval-tools** repository somewhere (eg,
 into /usr/local/serval-tools) and add its *vim* directory to your Vim runtime
-path, eg, by putting the following line into your `$HOME/.vimrc`:
+path, eg, by putting the following line into your $HOME/.vimrc:
 
     set runtimepath=~/.vim,/usr/local/serval-tools/vim,$VIMRUNTIME,/usr/local/serval-tools/vim/after,~/.vim/after
 
