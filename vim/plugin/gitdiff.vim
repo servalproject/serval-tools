@@ -1,7 +1,7 @@
 " Git vim diff mode functions.
 " vim: et ts=8 sts=2 sw=2
 "
-" Last Change: 28 May 2012
+" Last Change: 1 June 2012
 " Maintainer: Andrew Bettison <andrewb@zip.com.au>
 " Author: Andrew Bettison <andrewb@zip.com.au>
 " Copyright: 2012 Andrew Bettison
@@ -29,6 +29,16 @@
 "" \-   Close diff      Close current diff window
 "" \=   Close all       Equivalent to \\ followed by \L
 "" \|   Toggle main     Toggle the diff mode of the main file window. This is useful when two diff windows are open, to see only the changes between them.
+""
+"" Inside the log window:
+"" <Enter>              Open a diff window on the version of the current line.  If several lines are selected in visual mode, then opens two diff windows,
+""                      on the versions at the start and end of the range.
+"" +                    Increase the vertical size of the log window by five lines
+"" -                    Decrease the vertical size of the log window by five lines
+"" =                    Set the size of the log window to its default size (ten lines high)
+"" _                    Maximise the log window to as large as Vim will permit it
+"" m                    Move the cursor to the window editing the original source file
+"" q                    Close the log window
 
 " ------------------------------------------------------------------------------
 " Exit if this app has already been loaded or in vi compatible mode.
