@@ -21,21 +21,24 @@
 # that contain the given directory.  Creates 'tags' and 'cscope.out' files in
 # the roots of each repository.
 
-# sp-grep [--java] [--c] [--xml] [--] [-grep-options] pattern
+usage() {
+   echo "Usage: ${0##*/} [--java] [--c] [--xml] [--] [-grep-options] pattern"
+}
 
 filerexp=''
 while [ $# -ne 0 ]
 do
    case "$1" in
-   --) shift; break;;
+   --help) usage; exit 0;;
    --java) filerexp="${filerexp:+$filerexp|}"'\.java$'; shift;;
    --c) filerexp="${filerexp:+$filerexp|}"'\.[ch]$'; shift;;
    --xml) filerexp="${filerexp:+$filerexp|}"'\.xml$'; shift;;
+   --) shift; break;;
    *) break;;
    esac
 done
 
-sp-ls-files -S | egrep -e "$filerexp" | xargs grep --color=auto -Hn "$@"
+sp-ls-files -S | egrep -e "$filerexp" | sp-exclude-directories | xargs -d '\n' grep --color=auto -Hn "$@"
 
 # Stop vim reporting an error if no lines are found.
 exit 0
