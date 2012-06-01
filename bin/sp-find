@@ -1,0 +1,41 @@
+#!/bin/sh
+
+# Serval Project Git find(1) wrapper
+# Copyright 2012 Andrew Bettison
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+
+# Executes a find(1) over the whole Serval source code (current outermost Git
+# repository), omitting all files and directories that Git is configured to
+# ignore.
+#
+# Does not cope with spaces in path names.
+
+tmp="/tmp/${0##*/}-$$"
+trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
+
+dirs=
+while [ $# -ne 0 ]
+do
+	case "$1" in
+	-* | \( | ! ) break;;
+	*) dirs="$dirs $1"; shift;;
+	esac
+done
+
+sp-ls-files --submodules --exclude-standard --other --directory --ignored >"$tmp-1"
+[ $# -eq 0 ] && set -- -print
+exec find $dirs ! \( \( -false $(sed -e "s/^/-o -samefile /" "$tmp-1") \) -prune \) -a \( "$@" \)

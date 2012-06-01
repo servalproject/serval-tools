@@ -20,16 +20,41 @@
 
 # A wrapper around git ls-files that crosses submodule boundaries.
 
+default_git_options="--exclude-standard --cached --other"
+
+usage() {
+   echo "\
+Usage: ${0##*/} [--no-submodules] [git-options] [--] [args]
+       ${0##*/} [-S|--submodules] [git-options] [--]
+Options:
+   -S, --submodules  list all files in all submodules of the outermost
+                     Git repository
+   --no-submodules   only list files within the current git repostory
+                     [default]
+   --help            print this message and exit
+   git-options       all other options are passed directly to the
+                     'git ls-files' command; if none given, then passes
+                     $default_git_options
+Args:
+   Passed verbatim to the 'git ls-files' command.
+"
+}
+
 submodules=false
 opt_submodules=
+git_options=
 while [ $# -ne 0 ]
 do
    case "$1" in
+   --help) usage; exit 0;;
    --submodules|-S) opt_submodules="$1"; submodules=true; shift;;
    --no-submodules) opt_submodules="$1"; submodules=false; shift;;
+   -*) git_options="$git_options $1"; shift;;
+   --) shift; break;;
    *) break;;
    esac
 done
+[ -z "$git_options" ] && git_options="$default_git_options"
 
 # Find all enclosing Git repos of the given path (file or directory), from
 # smallest (probably a submodule) to the largest.
@@ -59,6 +84,9 @@ find_git_roots() {
    )
 }
 
+tmp="/tmp/${0##*/}-$$"
+trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
+
 # Assume that all paths given on the command line belong within the same Git
 # repo, so use the first arg to find the repo root.  If no paths specified on
 # the command line, then use the Git repo containing the current directory.
@@ -67,10 +95,11 @@ if [ $# -eq 0 ]; then
       git_root=$(find_git_roots --relative "$arg" | sed -n '$p')
       export _prefix="${git_root:+$git_root/}"
       cd "$git_root" >/dev/null || exit 1
-      git ls-files --exclude-standard --cached --other | awk '{ print ENVIRON["_prefix"] $0 }'
-      git submodule foreach --quiet --recursive git ls-files --exclude-standard --cached --other '|' 'path="$path"' awk \''{ print ENVIRON["_prefix"] ENVIRON["path"] "/" $0 }'\' #'
+      git ls-files $git_options >"$tmp-f" || exit $?
+      awk '{ print ENVIRON["_prefix"] $0 }' "$tmp-f"
+      git submodule foreach --quiet --recursive git ls-files $git_options '|' 'path="$path"' awk \''{ print ENVIRON["_prefix"] ENVIRON["path"] "/" $0 }'\' #'
    else
-      git ls-files --exclude-standard --cached --other
+      git ls-files $git_options || exit $?
    fi
 else
    if $submodules; then
@@ -100,7 +129,8 @@ else
             esac
          fi
       fi
-      eval git ls-files --exclude-standard --cached --other "$arg" | awk '{ print ENVIRON["_prefix"] $0 }'
+      git ls-files $git_options "$arg" >"$tmp-f" || exit $?
+      awk '{ print ENVIRON["_prefix"] $0 }' "$tmp-f"
    done
 fi
 exit 0
