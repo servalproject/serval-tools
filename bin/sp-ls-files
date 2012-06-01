@@ -90,27 +90,53 @@ trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
 # Assume that all paths given on the command line belong within the same Git
 # repo, so use the first arg to find the repo root.  If no paths specified on
 # the command line, then use the Git repo containing the current directory.
+
+git_root_abs=$(find_git_roots | sed -n '$p')
 if [ $# -eq 0 ]; then
+   # First list all the files in the current repository, whether or not it is a
+   # submodule.
+   git_subroot=$(find_git_roots --relative | sed -n '1p')
+   git ls-files $git_options "$git_subroot" || exit $?
    if $submodules; then
-      git_root=$(find_git_roots --relative "$arg" | sed -n '$p')
-      export _prefix="${git_root:+$git_root/}"
-      cd "$git_root" >/dev/null || exit 1
-      git ls-files $git_options >"$tmp-f" || exit $?
-      awk '{ print ENVIRON["_prefix"] $0 }' "$tmp-f"
-      git submodule foreach --quiet --recursive git ls-files $git_options '|' 'path="$path"' awk \''{ print ENVIRON["_prefix"] ENVIRON["path"] "/" $0 }'\' #'
-   else
-      git ls-files $git_options || exit $?
+      git_subroot_abs=$(find_git_roots | sed -n '1p')
+      git_root=$(find_git_roots --relative | sed -n '$p')
+      # List the contents of all the submodules within the current repository.
+      export _prefix="${git_subroot:+$git_subroot/}"
+      cd "$git_subroot_abs" || exit $?
+      git submodule foreach --quiet --recursive git ls-files $git_options '|' 'path="$path/"' awk \''{ print ENVIRON["_prefix"] ENVIRON["path"] $0 }'\' #'
+      git_subpath=
+      # If the outermost Git repository is not the current one, then list its
+      # contents and the contents of all of its submodules, excluding the one
+      # we started in and its descendents.
+      if [ "$git_subroot" != "$git_root" ]; then
+         git_subpath="${git_subroot_abs#$git_root_abs}"
+         git_subpath="${git_subpath#/}/"
+         export _prefix="${git_root:+$git_root/}"
+         cd "$git_root_abs" >/dev/null || exit $?
+         git ls-files $git_options >"$tmp-f" || exit $?
+         awk '{ print ENVIRON["_prefix"] $0 }' "$tmp-f"
+         git submodule foreach --quiet --recursive echo '$path/' |
+            while read path; do
+               if [ -z "$git_subpath" -o "${path#$git_subpath}" = "$path" ]; then
+                  (
+                     export path
+                     cd "$path" || exit $?
+                     git ls-files $git_options | awk '{ print ENVIRON["_prefix"] ENVIRON["path"] $0 }'
+                  ) || exit $?
+               fi
+            done
+      fi
    fi
 else
    if $submodules; then
       echo "${0##*/}: cannot use $opt_submodules with arguments" >&2
       exit 1
    fi
+   git_root_abs=$(find_git_roots | sed -n '1p')
    for arg; do
-      cwd_git_root=$(find_git_roots | sed -n '1p')
-      git_root=$(find_git_roots "$arg" | sed -n '1p')
+      arg_git_root=$(find_git_roots "$arg" | sed -n '1p')
       export _prefix=
-      if [ "$git_root" != "$cwd_git_root" ]; then
+      if [ "$arg_git_root" != "$git_root_abs" ]; then
          if [ -d "$arg" ]; then
             cd "$arg" >/dev/null || exit 1
             export _prefix="$arg/"
