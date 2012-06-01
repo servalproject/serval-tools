@@ -17,9 +17,9 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-# Generates useful ctags(1) and cscope(1) files for all the Git repositories
-# that contain the given directory.  Creates 'tags' and 'cscope.out' files in
-# the roots of each repository.
+# Searches all files in the current Git repository (outermost enclosing)
+# for the given pattern using grep(1).  Equivalent to the idiom:
+#     find projectroot -type f | xargs grep
 
 usage() {
    echo "Usage: ${0##*/} [--java] [--c] [--xml] [--] [-grep-options] pattern"
@@ -38,7 +38,15 @@ do
    esac
 done
 
-sp-ls-files -S | egrep -e "$filerexp" | sp-exclude-directories | xargs -d '\n' grep --color=auto -Hn "$@"
+tmp="/tmp/${0##*/}-$$"
+trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
+
+if sp-ls-files -S | egrep -e "$filerexp" >"$tmp-f"; then
+   cat "$tmp-f" |
+      sp-exclude-directories |
+      tr '\n' '\000' |
+      xargs -0 grep --color=auto -Hn "$@"
+fi
 
 # Stop vim reporting an error if no lines are found.
 exit 0

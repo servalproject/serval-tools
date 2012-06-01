@@ -21,4 +21,4 @@
 # Filter out names of existing directories from stdin.  Assumes one name per
 # line.
 
-xargs -d '\n' stat -c '%F:%n' | sed -e '/^directory:/d' -e 's/^[^:]*://'
+tr '\n' '\000' | xargs -0 stat -c '%F:%n' | sed -e '/^directory:/d' -e 's/^[^:]*://'
