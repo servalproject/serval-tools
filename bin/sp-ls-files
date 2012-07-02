@@ -75,13 +75,21 @@ find_git_roots() {
       fi
       REL=
       while [ "$PWD" != / ]; do
-         if [ -r ".git/config" ]; then
+         if is_git_root; then
             if $relative; then echo "$REL"; else echo "$PWD"; fi
          fi
          REL="$REL${REL:+/}.."
          cd .. >/dev/null || exit 1
       done
    )
+}
+
+is_git_root() {
+   [ -r "${1:-.}/.git/config" ] && return 0
+   case $(cat "${1:-.}/.git" 2>/dev/null) in
+   gitdir:*) return 0;;
+   esac
+   return 1
 }
 
 tmp="/tmp/${0##*/}-$$"
