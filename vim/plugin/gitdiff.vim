@@ -580,7 +580,6 @@ func s:setOrigBufferDiffMode(flag)
 endfunc
 
 func s:toggleOrigBufferDiffMode()
-  echo "wah"
   if exists('t:origDiffBuffer')
     let diff = getwinvar(bufwinnr(t:origDiffBuffer), '&diff')
     if diff
@@ -664,7 +663,11 @@ func s:openLog()
     " give the buffer a helpful name
     silent exe 'file' fnameescape('log '.filepath)
     " read the Git log into it -- all ancestors of the current working revision
-    silent exe "$read !git log --graph --date-order --format='format:\\%h|\\%ai|\\%an|\\%s' -- ".shellescape(filepath)
+    let heads = "HEAD"
+    if s:isWorkingMerge()
+      let heads = "HEAD MERGE_HEAD"
+    endif
+    silent exe "$read !git log --graph --date-order --format='format:\\%h|\\%ai|\\%an|\\%s' ".heads." -- ".shellescape(filepath)
     if s:displayGitError('Cannot read Git log', getline(1,'$'))
       call s:closeLog()
       return
