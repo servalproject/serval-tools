@@ -1,0 +1,6 @@
+[submodule "python/docopt"]
+	path = python/docopt
+	url = git://github.com/halst/docopt.git
+[submodule "python/PyGithub"]
+	path = python/PyGithub
+	url = git://github.com/jacquev6/PyGithub.git
