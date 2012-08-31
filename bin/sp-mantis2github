@@ -1,15 +1,20 @@
 #!/usr/bin/env python
 
 '''Usage:
-    mantis2github [options] mantis version
-    mantis2github [options] mantis wsdl
-    mantis2github [options] mantis list projects
-    mantis2github [options] mantis list issues [<project-id>] [-F|--fixed] [-O|--open]
-    mantis2github [options] mantis dump project <project-id>
-    mantis2github [options] mantis dump issue <issue-id>
-    mantis2github [options] github list repos
-    mantis2github -h | --help
-    mantis2github --version
+    sp-mantis2github [options] mantis version
+    sp-mantis2github [options] mantis wsdl
+    sp-mantis2github [options] mantis list users
+    sp-mantis2github [options] mantis list projects
+    sp-mantis2github [options] mantis list issues [<project-id>] [-C|--closed] [-O|--open]
+    sp-mantis2github [options] mantis dump project <project-id>
+    sp-mantis2github [options] mantis dump issue <issue-id>
+    sp-mantis2github [options] github list users
+    sp-mantis2github [options] github list repos
+    sp-mantis2github [options] github list issues <repo-name>
+    sp-mantis2github [options] github dump issue <repo-name> <issue-number>
+    sp-mantis2github [options] migrate <issue-id> <repo-name>
+    sp-mantis2github -h | --help
+    sp-mantis2github --version
 Options:
     -h --help               Show this message
     --version               Show version and exit
@@ -17,23 +22,28 @@ Options:
     --config=PATH           Read config file [default: $HOME/.mantis2github]
     --mantis-url=URL        Connect to Mantis SOAP service at this URL (default taken from
                             $SERVAL_MANTIS_URL/api/soap/mantisconnect.php if set, or config file)
-    --mantis-user=USER      Connect to Mantis with this user name (use config file for better security)
-    --mantis-password=PASS  Connect to Mantis with this password (use config file for better security)
-    --github-user=USER      Connect to GitHub with this user name (use config file for better security)
-    --github-password=PASS  Connect to GitHub with this password (use config file for better security)
-    --per-page=N            Fetch issues N entries per page [default: 100]
-    -F --fixed              When listing issues, only include issues resolved as "fixed"
-    -O --open               When listing issues, only include issues resolved as "open" or "reopened"
+    --mantis-user=USER      Connect to Mantis with this user name (overrides config file)
+    --mantis-password=PASS  Connect to Mantis with this password (overrides config file)
+    --github-user=USER      Connect to GitHub with this user name (overrides config file)
+    --github-password=PASS  Connect to GitHub with this password (overrides config file)
+    -C --closed             When listing issues, only include closed issues
+    -O --open               When listing issues, only include open issues
 
-The config file may contain a single "mantis=username:password" line, and is ignored
-unless it is owned by the caller and has permissions at most 0600.
+The config file is in INI format.  It contains user names and passwords in the clear so it is ignored
+unless owned by the caller and permissions are at most 0600.
 '''
 
+myname = 'sp-mantis2github'
+myversion = '0.2'
+debug = False
+
 import sys
+import traceback
 import os
 import os.path
 import logging
 import ConfigParser
+import datetime
 import suds
 import urllib2
 
@@ -44,9 +54,10 @@ def main():
     sys.path.append(os.path.join(serval_tools_root(), "python/PyGithub"))
     import docopt
     import github
-    opts = docopt.docopt(__doc__, version='0.1')
+    opts = docopt.docopt(__doc__, version=myversion)
     #print opts
     if opts['--debug']:
+        debug = True
         logging.getLogger().setLevel(logging.DEBUG)
         logging.getLogger('suds').setLevel(logging.INFO)
     config = read_config_file(os.path.expanduser(os.path.expandvars(opts['--config'])))
@@ -59,36 +70,74 @@ def main():
     mantis_password = opts['--mantis-password'] or config.mantis_password
     github_user = opts['--github-user'] or config.github_user
     github_password = opts['--github-password'] or config.github_password
-    if opts['mantis']:
-        if mantis_url is None:
-            fatal("missing Mantis URL")
-        try:
+    mantis_credentials={}
+    mantis_credentials['username'] = mantis_user
+    mantis_credentials['password'] = mantis_password
+    try:
+        if opts['mantis'] or opts['migrate']:
+            if not mantis_url:
+                fatal("missing Mantis URL")
             mc = suds.client.Client(mantis_url + '?wsdl')
+        if opts['github'] or opts['migrate']:
+            if github_user is None:
+                fatal("missing GitHub user name")
+            if github_password is None:
+                fatal("missing GitHub password")
+            gh = github.Github(github_user, github_password)
+            org = gh.get_organization('servalproject')
+        if opts['mantis']:
             if opts['version']:
                 print soap_service(mc, 'mc_version')
+                return
             if opts['wsdl']:
                 print mc
+                return
             if mantis_user is None:
                 fatal("missing Mantis user name")
             if mantis_password is None:
                 fatal("missing Mantis password")
-            clientopts={}
-            clientopts['username'] = mantis_user
-            clientopts['password'] = mantis_password
             if opts['list'] and opts['projects']:
-                projects = soap_service(mc, 'mc_projects_get_user_accessible', **clientopts)
+                projects = soap_service(mc, 'mc_projects_get_user_accessible', **mantis_credentials)
                 projects.sort(key=lambda p: p.id)
                 for project in projects:
                     print '%-5s %-15s %-15s %-40s' % (project.id, project.status.name, project.view_state.name, project.name)
+                return
             if opts['dump'] and opts['project']:
                 try:
                     project_id = int(opts['<project-id>'])
                 except ValueError:
                     fatal('invalid <project-id>')
-                projects = soap_service(mc, 'mc_projects_get_user_accessible', **clientopts)
+                projects = soap_service(mc, 'mc_projects_get_user_accessible', **mantis_credentials)
                 for project in projects:
                     if project.id == project_id:
                         print project
+                return
+            if opts['dump'] and opts['issue']:
+                try:
+                    issue_id = int(opts['<issue-id>'])
+                except ValueError:
+                    fatal('invalid <issue-id>')
+                print soap_service(mc, 'mc_issue_get', issue_id=issue_id, **mantis_credentials)
+                return
+            if opts['list'] and opts['users']:
+                all_issues = mantis_get_issues(mc, **mantis_credentials)
+                users = {}
+                for issue in all_issues:
+                    try:
+                        users[issue.reporter.id] = issue.reporter
+                    except AttributeError:
+                        pass
+                    try:
+                        users[issue.handler.id] = issue.handler
+                    except AttributeError:
+                        pass
+                users = users.values()
+                users.sort(key=lambda u: (getattr(u, 'name', ''), getattr(u, 'real_name', '')))
+                for user in users:
+                    values = (getattr(user, 'name', ''), getattr(user, 'real_name', ''), getattr(user, 'email', ''))
+                    if values != ('', '', ''):
+                        print '%-20s %-30s %s' % values
+                return
             if opts['list'] and opts['issues']:
                 project_ids = []
                 if opts['<project-id>']:
@@ -96,49 +145,101 @@ def main():
                         project_ids.append(int(opts['<project-id>']))
                     except ValueError:
                         fatal('invalid <project-id>')
-                if not project_ids:
-                    projects = soap_service(mc, 'mc_projects_get_user_accessible', **clientopts)
-                    for project in projects:
-                        project_ids.append(project.id)
-                try:
-                    per_page = int(opts['--per-page'])
-                except ValueError:
-                    fatal('invalid value for --per-page option')
-                all_issues = []
-                for project_id in project_ids:
-                    page = 1
-                    while True:
-                        issues = soap_service(mc, 'mc_project_get_issues', project_id=project_id, page_number=page, per_page=per_page, **clientopts)
-                        all_issues += issues
-                        if len(issues) < per_page:
-                            break
-                        page += 1
+                all_issues = mantis_get_issues(mc, project_ids, **mantis_credentials)
                 all_issues.sort(key=lambda p: p.id)
                 for issue in all_issues:
                     resolutions = []
                     if opts['--open']:
                         resolutions += ['open', 'reopened']
-                    if opts['--fixed']:
+                    if opts['--closed']:
                         resolutions += ['fixed']
                     if resolutions and issue.resolution.name not in resolutions:
                         continue
                     print '%-5s %-10s %s' % (issue.id, issue.resolution.name, issue.summary)
+                return
+        if opts['github']:
+            if opts['list'] and opts['users']:
+                users = list(org.get_members())
+                users.sort(key=lambda u: (u.login, u.name))
+                for user in users:
+                    print '%-20s %-30s %s' % (user.login, user.name or '', user.email or '')
+            if opts['list'] and opts['repos']:
+                repos = org.get_repos()
+                for repo in repos:
+                    print repo.name
+            repo_name = opts['<repo-name>']
+            if opts['list'] and opts['issues']:
+                repo = org.get_repo(repo_name)
+                all_issues = []
+                if opts['--open'] or not opts['--closed']:
+                    all_issues += repo.get_issues(state='open')
+                if opts['--closed'] or not opts['--open']:
+                    all_issues += repo.get_issues(state='closed')
+                all_issues.sort(key=lambda p: p.number)
+                for issue in all_issues:
+                    print '%-5s %-10s %s' % (issue.number, issue.state, issue.title)
             if opts['dump'] and opts['issue']:
                 try:
-                    issue_id = int(opts['<issue-id>'])
+                    issue_number = int(opts['<issue-number>'])
                 except ValueError:
-                    fatal('invalid <issue-id>')
-                print soap_service(mc, 'mc_issue_get', issue_id=issue_id, **clientopts)
-        except suds.WebFault, e:
-            fatal(e)
-        except IOError, e:
-            fatal('%s: %s' % (mantis_url, e))
-    if opts['github']:
-        gh = github.Github(github_user, github_password)
-        if opts['list'] and opts['repos']:
-            repos = gh.get_user().get_repos()
-            for repo in repos:
-                print repo.name
+                    fatal('invalid <issue-number>')
+                repo = org.get_repo(repo_name)
+                github_dump_issue(repo.get_issue(issue_number))
+        if opts['migrate']:
+            mantis_url_base = mantis_url[:mantis_url.index('/api/')]
+            try:
+                issue_id = int(opts['<issue-id>'])
+            except ValueError:
+                fatal('invalid <issue-id>')
+            repo_name = opts['<repo-name>']
+            repo = org.get_repo(repo_name)
+            mantis_issue = soap_service(mc, 'mc_issue_get', issue_id=issue_id, **mantis_credentials)
+            mantis_issue_url = mantis_url_base + '/view.php?id=' + str(mantis_issue.id)
+            mantis_issue_number = '%07u' % mantis_issue.id
+            label_name = 'mantis2github'
+            try:
+                label = repo.get_label(label_name)
+            except github.GithubException, e:
+                if e.status == 404:
+                    fatal('GitHub repo %r does not have label %r' % (repo_name, label_name))
+                raise
+            kwextra = {}
+            if hasattr(mantis_issue, 'handler'):
+                github_assignee = map_user(gh, mantis_issue.handler)
+                if not github_assignee:
+                    fatal('cannot map Mantis user %s to GitHub' % mantis_user_str(mantis_issue.handler))
+                kwextra['assignee'] = github_assignee
+            body = mantis_user_details(mantis_issue.reporter) + ' reported:\n\n' + mantis_issue.description + '\n\n'
+            if mantis_issue.steps_to_reproduce:
+                body += 'To reproduce:\n\n' + mantis_issue.steps_to_reproduce
+            github_issue = repo.create_issue(
+                    title=      mantis_issue.summary,
+                    body=       body,
+                    labels=     [label],
+                    **kwextra
+                )
+            github_issue.create_comment(
+                    'Originally reported as Mantis **' + mantis_issue_number + '** ' + mantis_issue_url +
+                    ' by ' + mantis_user_markdown(mantis_issue.reporter) +
+                    ' at ' + mantis_issue.date_submitted.ctime() + '.'
+                )
+            # TODO: insert all Mantis comments here
+            github_issue.create_comment(
+                    'Migrated from Mantis to GitHub at ' + datetime.datetime.now().ctime() +
+                    ' using ' + myname + ' version ' + myversion + '.'
+                );
+    except suds.WebFault, e:
+        if debug:
+            traceback.print_exc()
+        fatal(e)
+    except IOError, e:
+        if debug:
+            traceback.print_exc()
+        fatal('%s: %s' % (mantis_url or '<Unknown URL>', e))
+    except github.GithubException, e:
+        if debug:
+            traceback.print_exc()
+        fatal(e.data.get('message', 'Unknown error'))
 
 def fatal(message):
     logging.critical(message)
@@ -190,6 +291,23 @@ def read_config_file(path):
                 logging.error(e)
     return config
 
+def mantis_get_issues(mc, project_ids=None, per_page=100, **kwopts):
+    if not project_ids:
+        project_ids = []
+        projects = soap_service(mc, 'mc_projects_get_user_accessible', **kwopts)
+        for project in projects:
+            project_ids.append(project.id)
+    all_issues = []
+    for project_id in project_ids:
+        page = 1
+        while True:
+            issues = soap_service(mc, 'mc_project_get_issues', project_id=project_id, page_number=page, per_page=per_page, **kwopts)
+            all_issues += issues
+            if len(issues) < per_page:
+                break
+            page += 1
+    return all_issues
+
 def soap_service(client, method, **kwargs):
     '''This method exists to create a single code path to invoking SOAP services, that can be
     logged.
@@ -199,6 +317,96 @@ def soap_service(client, method, **kwargs):
         safe_kwargs['password'] = '***'
     logging.debug('%s(%s)' % (method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems())))
     return getattr(client.service, method)(**kwargs)
+
+def mantis_user_str(user):
+    if not user:
+        return 'None'
+    r = [user.name]
+    if user.real_name:
+        r += [repr(user.real_name)]
+    if user.email:
+        r += ['<%s>' % user.email]
+    return ' '.join(r)
+
+def mantis_user_markdown(user):
+    if not user:
+        return 'None'
+    r = ['**' + user.name + '**']
+    d = mantis_user_details(user)
+    if d:
+        r += [d]
+    return ' '.join(r)
+
+def mantis_user_details(user):
+    r = []
+    if user.real_name:
+        r += [user.real_name]
+    if user.email:
+        r += ['<%s>' % user.email]
+    return ' '.join(r)
+
+def github_dump_issue(issue):
+    print 'number', '=', issue.number
+    print 'title', '=', issue.title
+    print 'state', '=', issue.state
+    print 'milestone', '=', github_milestone_str(issue.milestone)
+    print 'labels', '=', ', '.join(label.name for label in issue.labels)
+    print 'created_at', '=', issue.created_at
+    print 'updated_at', '=', issue.updated_at
+    print 'user', '=', github_user_str(issue.user)
+    print 'assignee', '=', github_user_str(issue.assignee)
+    print 'repository', '=', issue.repository
+    print 'pull_request', '=', issue.pull_request.html_url if issue.pull_request else 'None'
+    print 'id', '=', issue.id
+    print 'html_url', '=', issue.html_url
+    print 'url', '=', issue.url
+    print 'closed_at', '=', issue.closed_at
+    print 'closed_by', '=', github_user_str(issue.closed_by)
+    print 'body', '=', issue.body
+    print 'comments', '=', issue.comments
+    if issue.comments:
+        for i, comment in enumerate(issue.get_comments()):
+            print '-------------------- comment', i + 1, '--------------------'
+            github_dump_issue_comment(comment)
+
+def github_dump_issue_comment(comment):
+    print 'user', '=', github_user_str(comment.user)
+    print 'created_at', '=', comment.created_at
+    print 'updated_at', '=', comment.updated_at
+    print 'id', '=', comment.id
+    print 'url', '=', comment.url
+    print 'body', '=', comment.body
+
+def github_user_str(user):
+    if not user:
+        return 'None'
+    r = [user.login]
+    if user.name:
+        r += [repr(user.name)]
+    if user.email:
+        r += ['<%s>' % user.email]
+    return ' '.join(r)
+
+def github_milestone_str(milestone):
+    return '%s (%s) %s' % (milestone.number, milestone.due_on, milestone.title) if milestone else 'None';
+
+def map_user(gh, mantis_user):
+    '''Convert a Mantis AccountData object into a GitHub NamedUser object.  Lots of dark hackery
+    here.'''
+    if mantis_user is None:
+        return None
+    map = {
+        'PaulGardnerStephen':   'gardners',
+        'romana':               'timelady',
+        'andrew':               'quixotique',
+        'brendonski':           'brendonski',
+        'jeremy':               'lakeman',
+        'corey':                'techxplorer',
+        'daniel':               'DanielO',
+        'swapna':               'swapnapalaniswamy',
+    }
+    ghname = map.get(mantis_user.name, None)
+    return gh.get_user(ghname) if ghname else None
 
 def parse_mantis_xml(f):
     '''This is left-over code from an early attempt to parse the XML exported by Mantis.
