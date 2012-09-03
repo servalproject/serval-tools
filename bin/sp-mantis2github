@@ -8,6 +8,7 @@
     sp-mantis2github [options] mantis list issues [<project-id>] [-C|--closed] [-O|--open]
     sp-mantis2github [options] mantis dump project <project-id>
     sp-mantis2github [options] mantis dump issue <issue-id>
+    sp-mantis2github [options] github register
     sp-mantis2github [options] github list users
     sp-mantis2github [options] github list repos
     sp-mantis2github [options] github list issues <repo-name>
@@ -19,6 +20,7 @@ Options:
     -h --help               Show this message
     --version               Show version and exit
     -D --debug              Enable debug logging
+    -n --dry-run            Do not write to GitHub, just perform all queries
     --config=PATH           Read config file [default: $HOME/.mantis2github]
     --mantis-url=URL        Connect to Mantis SOAP service at this URL (default taken from
                             $SERVAL_MANTIS_URL/api/soap/mantisconnect.php if set, or config file)
@@ -34,7 +36,7 @@ unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.2'
+myversion = '0.3'
 debug = False
 
 import sys
@@ -46,6 +48,7 @@ import ConfigParser
 import datetime
 import suds
 import urllib2
+import re
 
 def main():
     logging.basicConfig(level=logging.INFO)
@@ -56,6 +59,7 @@ def main():
     import github
     opts = docopt.docopt(__doc__, version=myversion)
     #print opts
+    debug = False
     if opts['--debug']:
         debug = True
         logging.getLogger().setLevel(logging.DEBUG)
@@ -70,9 +74,6 @@ def main():
     mantis_password = opts['--mantis-password'] or config.mantis_password
     github_user = opts['--github-user'] or config.github_user
     github_password = opts['--github-password'] or config.github_password
-    mantis_credentials={}
-    mantis_credentials['username'] = mantis_user
-    mantis_credentials['password'] = mantis_password
     try:
         if opts['mantis'] or opts['migrate']:
             if not mantis_url:
@@ -81,21 +82,30 @@ def main():
         if opts['github'] or opts['migrate']:
             if github_user is None:
                 fatal("missing GitHub user name")
-            if github_password is None:
-                fatal("missing GitHub password")
-            gh = github.Github(github_user, github_password)
-            org = gh.get_organization('servalproject')
+            github_users = {}
+            for login, token in config.github_users.iteritems():
+                gh = GithubUser()
+                gh.login = login
+                logging.debug('connect to GitHub as %r' % (login,))
+                gh.account = github.Github(token)
+                gh.org = gh.account.get_organization('servalproject')
+                github_users[login] = gh
         if opts['mantis']:
-            if opts['version']:
-                print soap_service(mc, 'mc_version')
-                return
             if opts['wsdl']:
                 print mc
                 return
+            if opts['version']:
+                print soap_service(mc, 'mc_version')
+                return
+        if opts['mantis'] or opts['migrate']:
             if mantis_user is None:
                 fatal("missing Mantis user name")
             if mantis_password is None:
                 fatal("missing Mantis password")
+            mantis_credentials={}
+            mantis_credentials['username'] = mantis_user
+            mantis_credentials['password'] = mantis_password
+        if opts['mantis']:
             if opts['list'] and opts['projects']:
                 projects = soap_service(mc, 'mc_projects_get_user_accessible', **mantis_credentials)
                 projects.sort(key=lambda p: p.id)
@@ -158,18 +168,35 @@ def main():
                     print '%-5s %-10s %s' % (issue.id, issue.resolution.name, issue.summary)
                 return
         if opts['github']:
+            if opts['register']:
+                if github_password is None:
+                    fatal("missing GitHub password")
+                logging.debug('connect to GitHub as %r with password' % (github_user,))
+                gha = github.Github(github_user, github_password)
+                ghuser = gha.get_user()
+                logging.debug('create GitHub authorization')
+                if not opts['--dry-run']:
+                    auth = ghuser.create_authorization(scopes=['public_repo'], note= myname + ' version ' + myversion)
+                    print auth.token
+                return
+        if github_user not in github_users:
+            fatal('missing token for GitHub user %r' % github_user)
+        github_default_user = github_users.get(github_user) # Default user
+        if opts['github']:
             if opts['list'] and opts['users']:
-                users = list(org.get_members())
+                users = list(github_default_user.org.get_members())
                 users.sort(key=lambda u: (u.login, u.name))
                 for user in users:
                     print '%-20s %-30s %s' % (user.login, user.name or '', user.email or '')
+                return
             if opts['list'] and opts['repos']:
-                repos = org.get_repos()
+                repos = github_default_user.org.get_repos()
                 for repo in repos:
                     print repo.name
+                return
             repo_name = opts['<repo-name>']
             if opts['list'] and opts['issues']:
-                repo = org.get_repo(repo_name)
+                repo = github_default_user.org.get_repo(repo_name)
                 all_issues = []
                 if opts['--open'] or not opts['--closed']:
                     all_issues += repo.get_issues(state='open')
@@ -178,13 +205,15 @@ def main():
                 all_issues.sort(key=lambda p: p.number)
                 for issue in all_issues:
                     print '%-5s %-10s %s' % (issue.number, issue.state, issue.title)
+                return
             if opts['dump'] and opts['issue']:
                 try:
                     issue_number = int(opts['<issue-number>'])
                 except ValueError:
                     fatal('invalid <issue-number>')
-                repo = org.get_repo(repo_name)
+                repo = github_default_user.org.get_repo(repo_name)
                 github_dump_issue(repo.get_issue(issue_number))
+                return
         if opts['migrate']:
             mantis_url_base = mantis_url[:mantis_url.index('/api/')]
             try:
@@ -192,42 +221,108 @@ def main():
             except ValueError:
                 fatal('invalid <issue-id>')
             repo_name = opts['<repo-name>']
-            repo = org.get_repo(repo_name)
             mantis_issue = soap_service(mc, 'mc_issue_get', issue_id=issue_id, **mantis_credentials)
             mantis_issue_url = mantis_url_base + '/view.php?id=' + str(mantis_issue.id)
             mantis_issue_number = '%07u' % mantis_issue.id
+            mantis_link = '[mantis:' + mantis_issue_number + '](' + mantis_issue_url + ')'
+            creator_gh, reporter_ref, reporter_tag = resolve_user(config, github_users, mantis_issue.reporter)
+            if creator_gh is None:
+                creator_gh = github_default_user
+            creator_gh.repo = creator_gh.org.get_repo(repo_name)
             label_name = 'mantis2github'
             try:
-                label = repo.get_label(label_name)
+                label = creator_gh.repo.get_label(label_name)
             except github.GithubException, e:
                 if e.status == 404:
                     fatal('GitHub repo %r does not have label %r' % (repo_name, label_name))
                 raise
-            kwextra = {}
-            if hasattr(mantis_issue, 'handler'):
-                github_assignee = map_user(gh, mantis_issue.handler)
-                if not github_assignee:
-                    fatal('cannot map Mantis user %s to GitHub' % mantis_user_str(mantis_issue.handler))
-                kwextra['assignee'] = github_assignee
-            body = mantis_user_details(mantis_issue.reporter) + ' reported:\n\n' + mantis_issue.description + '\n\n'
-            if mantis_issue.steps_to_reproduce:
-                body += 'To reproduce:\n\n' + mantis_issue.steps_to_reproduce
-            github_issue = repo.create_issue(
-                    title=      mantis_issue.summary,
-                    body=       body,
-                    labels=     [label],
-                    **kwextra
-                )
-            github_issue.create_comment(
-                    'Originally reported as Mantis **' + mantis_issue_number + '** ' + mantis_issue_url +
-                    ' by ' + mantis_user_markdown(mantis_issue.reporter) +
+            body = []
+            if reporter_tag:
+                body += [reporter_tag, ' reported:\n\n']
+            body += [mantis_text_to_markdown(mantis_issue.description)]
+            # This must be the first comment to make it easy to later detect and cross-reference Mantis
+            # issues to GitHub issues.
+            comments = [(creator_gh,
+                    'Originally reported as **' + mantis_link + '**'
+                    (' by ' + reporter_ref if reporter_ref else '') +
                     ' at ' + mantis_issue.date_submitted.ctime() + '.'
-                )
-            # TODO: insert all Mantis comments here
-            github_issue.create_comment(
-                    'Migrated from Mantis to GitHub at ' + datetime.datetime.now().ctime() +
-                    ' using ' + myname + ' version ' + myversion + '.'
-                );
+                )]
+            github_assignee = None
+            if hasattr(mantis_issue, 'handler') and mantis_issue.handler:
+                github_assignee_login = config.user_map.get(mantis_issue.handler.name)
+                if github_assignee_login:
+                    github_assignee = github_default_user.account.get_user(github_assignee_login)
+            body += ['\n\nCan reproduce: **', mantis_issue.reproducibility.name, '**']
+            if hasattr(mantis_issue, 'steps_to_reproduce') and mantis_issue.steps_to_reproduce:
+                body += ['\n\nTo reproduce:\n\n', mantis_text_to_markdown(mantis_issue.steps_to_reproduce)]
+            if hasattr(mantis_issue, 'additional_information') and mantis_issue.additional_information:
+                body += ['\n\n' + mantis_text_to_markdown(mantis_issue.additional_information)]
+            createargs = {}
+            createargs['title'] = unicode(mantis_issue.summary)
+            createargs['body'] = u''.join(body)
+            createargs['labels'] = [label]
+            if hasattr(mantis_issue, 'notes') and mantis_issue.notes:
+                for note in mantis_issue.notes:
+                    noter_github, noter_ref, noter_tag = resolve_user(config, github_users, note.reporter)
+                    body = []
+                    body += ['At ', note.date_submitted.ctime()]
+                    if noter_github is None:
+                        noter_github = github_default_user
+                        body += [' ', noter_tag, ' commented']
+                    else:
+                        noter_tag = None
+                    body += [':']
+                    if hasattr(note, 'time_tracking') and note.time_tracking:
+                        hours = note.time_tracking / 60
+                        minutes = note.time_tracking % 60
+                        body += ['\n\nTime spent: **%u:%02u**' % (hours, minutes)]
+                    if hasattr(note, 'text') and note.text:
+                        body += ['\n\n', mantis_text_to_markdown(note.text)]
+                    comments.append((noter_github, ''.join(body)))
+            # TODO: close the issue before the migration comment
+            comments.append((github_default_user,
+                    'Issue migrated from Mantis to GitHub' +
+                    ' at ' + datetime.datetime.now().ctime() +
+                    ' using [' + myname + '](https://github.com/servalproject/serval-tools/blob/master/bin/' + myname + ') version ' + myversion + '.'
+                ))
+            logging.debug('GitHub login %r repo %r create_issue(title=%r body=%r labels=[%s])' % (
+                    creator_gh.login,
+                    creator_gh.repo.name,
+                    createargs['title'],
+                    createargs['body'],
+                    ','.join(label.name for label in createargs['labels']),
+                ))
+            issue_number = None
+            if not opts['--dry-run']:
+                creator_gh.issue = creator_gh.repo.create_issue(**createargs)
+                issue_number = creator_gh.issue.number
+            if github_assignee is not None:
+                logging.debug('GitHub login %r repo %r issue %r edit(assignee=%r)' % (creator_gh.login, creator_gh.repo.name, issue_number, github_assignee.login))
+                if not opts['--dry-run']:
+                    creator_gh.issue.edit(assignee=github_assignee)
+            if creator_gh.issue is not None and creator_gh.issue.assignee is None:
+                logging.warn('cannot assign issue to %r' % (github_assignee.login,))
+                comments.insert(1, (github_default_user, 'Assigned to Mantis user ' + mantis_user_markdown(mantis_issue.handler) + '.'))
+            for commenter_gh, comment in comments:
+                if commenter_gh.repo is None:
+                    commenter_gh.repo = commenter_gh.org.get_repo(repo_name)
+                logging.debug('GitHub login %r repo %r issue %r create_comment(%r)' % (commenter_gh.login, commenter_gh.repo.name, issue_number, comment))
+                if not opts['--dry-run']:
+                    if commenter_gh.issue is None:
+                        commenter_gh.issue = commenter_gh.repo.get_issue(issue_number)
+                    commenter_gh.issue.create_comment(comment)
+            # TODO: handle project
+            # TODO: handle version and target version
+            # TODO: handle severity
+            # TODO: handle priority
+            # TODO: handle tags
+            # TODO: handle attachments (import as Gists?)
+            # TODO: handle relationships (links between issues)
+            #   - command to build map
+            #   - cache map locally
+            #   - command to edit comments referring to imported Mantis issues,
+            #     to refer to GitHub issues instead
+            return
     except suds.WebFault, e:
         if debug:
             traceback.print_exc()
@@ -252,6 +347,15 @@ class Config(object):
     mantis_url = None
     mantis_user = None
     mantis_password = None
+    github_users = {}
+    user_map = {}
+
+class GithubUser(object):
+    login = None
+    account = None
+    org = None
+    repo = None
+    issue = None
 
 def read_config_file(path):
     config = Config()
@@ -263,28 +367,35 @@ def read_config_file(path):
             logging.warn("%s exists but has mode %#o (should be at most 0600)" % (path, stat.st_mode & 0777))
         else:
             try:
-                cp = ConfigParser.SafeConfigParser(os.environ)
+                cp = ConfigParser.SafeConfigParser()
+                cp.optionxform = str
                 cp.readfp(file(path))
                 try:
-                    config.mantis_url = cp.get('mantis', 'url')
+                    config.mantis_url = cp.get('mantis', 'url', os.environ)
                 except ConfigParser.NoOptionError:
                     pass
                 try:
-                    config.mantis_user = cp.get('mantis', 'user')
+                    config.mantis_user = cp.get('mantis', 'user', os.environ)
                 except ConfigParser.NoOptionError:
                     pass
                 try:
-                    config.mantis_password = cp.get('mantis', 'password')
+                    config.mantis_password = cp.get('mantis', 'password', os.environ)
                 except ConfigParser.NoOptionError:
                     pass
                 try:
-                    config.github_user = cp.get('github', 'user')
+                    config.github_user = cp.get('github', 'user', os.environ)
                 except ConfigParser.NoOptionError:
                     pass
                 try:
-                    config.github_password = cp.get('github', 'password')
+                    config.github_password = cp.get('github', 'password', os.environ)
                 except ConfigParser.NoOptionError:
                     pass
+                config.github_users = {}
+                for key, value in cp.items('github users'):
+                    config.github_users[key] = cp.get('github users', key, os.environ)
+                config.user_map = {}
+                for key, value in cp.items('user map'):
+                    config.user_map[key] = cp.get('user map', key, os.environ)
             except ValueError, e:
                 logging.error('%s, line %d: malformed line' % (path, lnum))
             except IOError, e:
@@ -388,25 +499,43 @@ def github_user_str(user):
     return ' '.join(r)
 
 def github_milestone_str(milestone):
-    return '%s (%s) %s' % (milestone.number, milestone.due_on, milestone.title) if milestone else 'None';
+    return '%s (%s) %s' % (milestone.number, milestone.due_on, milestone.title) if milestone else 'None'
 
-def map_user(gh, mantis_user):
-    '''Convert a Mantis AccountData object into a GitHub NamedUser object.  Lots of dark hackery
-    here.'''
+def map_user(config, gh, mantis_user):
+    '''Convert a Mantis AccountData object into a GitHub NamedUser object.'''
     if mantis_user is None:
         return None
-    map = {
-        'PaulGardnerStephen':   'gardners',
-        'romana':               'timelady',
-        'andrew':               'quixotique',
-        'brendonski':           'brendonski',
-        'jeremy':               'lakeman',
-        'corey':                'techxplorer',
-        'daniel':               'DanielO',
-        'swapna':               'swapnapalaniswamy',
-    }
-    ghname = map.get(mantis_user.name, None)
+    ghname = config.user_map.get(mantis_user.name, None)
     return gh.get_user(ghname) if ghname else None
+
+def resolve_user(config, github_users, mantis_account):
+    github_reporter_login = config.user_map.get(mantis_account.name)
+    gh, ref, tag = None, None, None
+    if github_reporter_login is None:
+        ref = mantis_user_markdown(mantis_account)
+        tag = mantis_user_details(mantis_account)
+    else:
+        ref = '@' + github_reporter_login
+        tag = ref
+        github_reporter = github_users.get(github_reporter_login)
+        if github_reporter and github_reporter.org is not None:
+            gh = github_reporter
+    logging.debug('resolved mantis user %r to %r %s' % (mantis_account.name, tag, '(auth)' if gh else '(no auth)'))
+    return gh, ref, tag
+
+def mantis_text_to_markdown(text):
+    # Remove leading blank lines.
+    text = re.sub(r'^( *\n)+', '', text)
+    # If it looks like a stack trace or log file, then preformat it.  Otherwise, remove
+    # unintended Markdown effects.
+    if (    len(re.findall(r'\bat .*\(.*\.java:[0-9]+\)', text)) > 3
+        or  len(re.findall(r'^ *(DEBUG|WARN|INFO|ERROR):', text, flags=re.MULTILINE)) > 3
+        or  len(re.findall(r'^ *[EWIDV]/', text, flags=re.MULTILINE)) > 3
+        ):
+        text = '```' + text + '\n```'
+    else:
+        text = re.subn(r'^ {4,}', '   ', text, flags=re.MULTILINE)[0]
+    return text
 
 def parse_mantis_xml(f):
     '''This is left-over code from an early attempt to parse the XML exported by Mantis.
