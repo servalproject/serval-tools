@@ -36,7 +36,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.41'
+myversion = '0.42'
 
 import sys
 import traceback
@@ -135,18 +135,26 @@ def main():
                     print '%-5s %-10s %s' % (issue.id, issue.resolution.name, issue.summary)
         elif cx.opts['github']:
             if cx.opts['register']:
-                ghuser = cx.github.main().root().get_user().get_user()
-                logging.debug('create GitHub authorization')
+                root = cx.github.main().root()
+                logging.debug('%s get_user()' % (cx.github.main().debugtag(),))
+                ghuser = root.get_user()
+                scopes = ['public_repo']
+                note = myname + ' version ' + myversion
+                logging.debug('%s create_authorization(scopes=%r, note=%r)' % (cx.github.main().debugtag(), scopes, note))
                 if not cx.dry_run:
-                    auth = ghuser.create_authorization(scopes=['public_repo'], note= myname + ' version ' + myversion)
+                    auth = ghuser.create_authorization(scopes=scopes, note=note)
                     print auth.token
             elif cx.opts['list'] and cx.opts['users']:
-                users = list(cx.github.default_connection().org().get_members())
+                org = cx.github.default_connection().org()
+                logging.debug('%s get_members()' % (cx.github.default_connection(org=org).debugtag(),))
+                users = list(org.get_members())
                 users.sort(key=lambda u: (u.login, u.name))
                 for user in users:
                     print '%-20s %-30s %s' % (user.login, user.name or '', user.email or '')
             elif cx.opts['list'] and cx.opts['repos']:
-                repos = cx.github.default_connection().org().get_repos()
+                org = cx.github.default_connection().org()
+                logging.debug('%s get_repos()' % (cx.github.default_connection(org=org).debugtag(),))
+                repos = org.get_repos()
                 for repo in repos:
                     print repo.name
             elif cx.opts['list'] and cx.opts['issues']:
@@ -200,7 +208,7 @@ def main():
                 logging.debug('%s get_label(%r)' % (creator_ghc.debugtag(repo=repo), label_name))
                 label = repo.get_label(label_name)
                 if label.color.lower() != label_colour:
-                    logging.debug('%s label %r edit(name=%r, color=%r)' % (creator_ghc.debugtag(repo=repo), label_name, label_name, label_colour))
+                    logging.debug('%s label=%r edit(name=%r, color=%r)' % (creator_ghc.debugtag(repo=repo), label_name, label_name, label_colour))
                     if not cx.dry_run:
                         label.edit(label_name, label_colour)
             body = []
@@ -318,14 +326,20 @@ class MantisInterface(object):
     def read_config(self, cp):
         try:
             self.url = cp.get('mantis', 'url', os.environ)
+        except ConfigParser.NoSectionError:
+            pass
         except ConfigParser.NoOptionError:
             pass
         try:
             self.user = cp.get('mantis', 'user', os.environ)
+        except ConfigParser.NoSectionError:
+            pass
         except ConfigParser.NoOptionError:
             pass
         try:
             self.password = cp.get('mantis', 'password', os.environ)
+        except ConfigParser.NoSectionError:
+            pass
         except ConfigParser.NoOptionError:
             pass
 
@@ -404,15 +418,22 @@ class GithubInterface(object):
     def read_config(self, cp):
         try:
             self.login = cp.get('github', 'login', os.environ)
+        except ConfigParser.NoSectionError:
+            pass
         except ConfigParser.NoOptionError:
             pass
         try:
             self.password = cp.get('github', 'password', os.environ)
+        except ConfigParser.NoSectionError:
+            pass
         except ConfigParser.NoOptionError:
             pass
         self.user_tokens = {}
-        for key, value in cp.items('github users'):
-            self.user_tokens[key] = cp.get('github users', key, os.environ)
+        try:
+            for key, value in cp.items('github users'):
+                self.user_tokens[key] = cp.get('github users', key, os.environ)
+        except ConfigParser.NoSectionError:
+            pass
 
     def main(self):
         if not self._main:
@@ -450,13 +471,13 @@ class GithubConnection(object):
             repo = issue.repository
         if repo:
             org = repo.organization
-        r = ['GitHub login %r' % (self.login,)]
+        r = ['GitHub login=%r' % (self.login,)]
         if org:
-            r += ['org %r' % org.name]
+            r += ['org=%r' % org.name]
         if repo:
-            r += ['repo %r' % repo.name]
+            r += ['repo=%r' % repo.name]
         if issue:
-            r += ['issue %r' % issue.number]
+            r += ['issue=%r' % issue.number]
         return ' '.join(r)
 
     def root(self):
@@ -510,8 +531,11 @@ class Context(object):
                 self.mantis.read_config(cp)
                 self.github.read_config(cp)
                 self.user_map = {}
-                for key, value in cp.items('user map'):
-                    self.user_map[key] = cp.get('user map', key, os.environ)
+                try:
+                    for key, value in cp.items('user map'):
+                        self.user_map[key] = cp.get('user map', key, os.environ)
+                except ConfigParser.NoSectionError:
+                    pass
 
     def map_user(self, mantis_user):
         '''Convert a Mantis AccountData object into a GitHub NamedUser object.'''
