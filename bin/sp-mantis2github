@@ -26,18 +26,17 @@ Options:
                             $SERVAL_MANTIS_URL/api/soap/mantisconnect.php if set, or config file)
     --mantis-user=USER      Connect to Mantis with this user name (overrides config file)
     --mantis-password=PASS  Connect to Mantis with this password (overrides config file)
-    --github-user=USER      Connect to GitHub with this user name (overrides config file)
+    --github-login=USER     Connect to GitHub with this user name (overrides config file)
     --github-password=PASS  Connect to GitHub with this password (overrides config file)
     -C --closed             When listing issues, only include closed issues
     -O --open               When listing issues, only include open issues
 
-The config file is in INI format.  It contains user names and passwords in the clear so it is ignored
-unless owned by the caller and permissions are at most 0600.
+The config file is in INI format.  It contains user names and passwords in the clear so it is
+ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.3'
-debug = False
+myversion = '0.4'
 
 import sys
 import traceback
@@ -57,80 +56,50 @@ def main():
     sys.path.append(os.path.join(serval_tools_root(), "python/PyGithub"))
     import docopt
     import github
-    opts = docopt.docopt(__doc__, version=myversion)
-    #print opts
-    debug = False
-    if opts['--debug']:
-        debug = True
+    cx = Context()
+    cx.opts = docopt.docopt(__doc__, version=myversion)
+    #print cx.opts
+    cx.mantis.url = os.environ.get('SERVAL_MANTIS_URL')
+    cx.read_config_file(os.path.expanduser(os.path.expandvars(cx.opts['--config'])))
+    if cx.opts['--debug']:
+        cx.debug = True
+    cx.dry_run = cx.opts['--dry-run']
+    cx.mantis.url = cx.opts['--mantis-url'] or cx.mantis.url
+    cx.mantis.user = cx.opts['--mantis-user'] or cx.mantis.user
+    cx.mantis.password = cx.opts['--mantis-password'] or cx.mantis.password
+    cx.github.login = cx.opts['--github-login'] or cx.github.login
+    cx.github.password = cx.opts['--github-password'] or cx.github.password
+    if cx.debug:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.getLogger('suds').setLevel(logging.INFO)
-    config = read_config_file(os.path.expanduser(os.path.expandvars(opts['--config'])))
-    mantis_url = opts['--mantis-url']
-    if not mantis_url:
-        mantis_url = config.mantis_url or os.environ.get('SERVAL_MANTIS_URL')
-        if mantis_url:
-            mantis_url += '/api/soap/mantisconnect.php'
-    mantis_user = opts['--mantis-user'] or config.mantis_user
-    mantis_password = opts['--mantis-password'] or config.mantis_password
-    github_user = opts['--github-user'] or config.github_user
-    github_password = opts['--github-password'] or config.github_password
     try:
-        if opts['mantis'] or opts['migrate']:
-            if not mantis_url:
-                fatal("missing Mantis URL")
-            mc = suds.client.Client(mantis_url + '?wsdl')
-        if opts['github'] or opts['migrate']:
-            if github_user is None:
-                fatal("missing GitHub user name")
-            github_users = {}
-            for login, token in config.github_users.iteritems():
-                gh = GithubUser()
-                gh.login = login
-                logging.debug('connect to GitHub as %r' % (login,))
-                gh.account = github.Github(token)
-                gh.org = gh.account.get_organization('servalproject')
-                github_users[login] = gh
-        if opts['mantis']:
-            if opts['wsdl']:
-                print mc
-                return
-            if opts['version']:
-                print soap_service(mc, 'mc_version')
-                return
-        if opts['mantis'] or opts['migrate']:
-            if mantis_user is None:
-                fatal("missing Mantis user name")
-            if mantis_password is None:
-                fatal("missing Mantis password")
-            mantis_credentials={}
-            mantis_credentials['username'] = mantis_user
-            mantis_credentials['password'] = mantis_password
-        if opts['mantis']:
-            if opts['list'] and opts['projects']:
-                projects = soap_service(mc, 'mc_projects_get_user_accessible', **mantis_credentials)
+        if cx.opts['mantis']:
+            if cx.opts['wsdl']:
+                print cx.mantis.client()
+            elif cx.opts['version']:
+                print cx.mantis.service('mc_version')
+            elif cx.opts['list'] and cx.opts['projects']:
+                projects = cx.mantis.service_cred('mc_projects_get_user_accessible')
                 projects.sort(key=lambda p: p.id)
                 for project in projects:
                     print '%-5s %-15s %-15s %-40s' % (project.id, project.status.name, project.view_state.name, project.name)
-                return
-            if opts['dump'] and opts['project']:
+            elif cx.opts['dump'] and cx.opts['project']:
                 try:
-                    project_id = int(opts['<project-id>'])
+                    project_id = int(cx.opts['<project-id>'])
                 except ValueError:
                     fatal('invalid <project-id>')
-                projects = soap_service(mc, 'mc_projects_get_user_accessible', **mantis_credentials)
+                projects = cx.mantis.service_cred('mc_projects_get_user_accessible')
                 for project in projects:
                     if project.id == project_id:
                         print project
-                return
-            if opts['dump'] and opts['issue']:
+            elif cx.opts['dump'] and cx.opts['issue']:
                 try:
-                    issue_id = int(opts['<issue-id>'])
+                    issue_id = int(cx.opts['<issue-id>'])
                 except ValueError:
                     fatal('invalid <issue-id>')
-                print soap_service(mc, 'mc_issue_get', issue_id=issue_id, **mantis_credentials)
-                return
-            if opts['list'] and opts['users']:
-                all_issues = mantis_get_issues(mc, **mantis_credentials)
+                print cx.mantis.service_cred('mc_issue_get', issue_id=issue_id)
+            elif cx.opts['list'] and cx.opts['users']:
+                all_issues = cx.mantis.get_issues()
                 users = {}
                 for issue in all_issues:
                     try:
@@ -147,170 +116,173 @@ def main():
                     values = (getattr(user, 'name', ''), getattr(user, 'real_name', ''), getattr(user, 'email', ''))
                     if values != ('', '', ''):
                         print '%-20s %-30s %s' % values
-                return
-            if opts['list'] and opts['issues']:
+            elif cx.opts['list'] and cx.opts['issues']:
                 project_ids = []
-                if opts['<project-id>']:
+                if cx.opts['<project-id>']:
                     try:
-                        project_ids.append(int(opts['<project-id>']))
+                        project_ids.append(int(cx.opts['<project-id>']))
                     except ValueError:
                         fatal('invalid <project-id>')
-                all_issues = mantis_get_issues(mc, project_ids, **mantis_credentials)
+                all_issues = cx.mantis.get_issues(project_ids)
                 all_issues.sort(key=lambda p: p.id)
                 for issue in all_issues:
                     resolutions = []
-                    if opts['--open']:
+                    if cx.opts['--open']:
                         resolutions += ['open', 'reopened']
-                    if opts['--closed']:
+                    if cx.opts['--closed']:
                         resolutions += ['fixed']
                     if resolutions and issue.resolution.name not in resolutions:
                         continue
                     print '%-5s %-10s %s' % (issue.id, issue.resolution.name, issue.summary)
-                return
-        if opts['github']:
-            if opts['register']:
-                if github_password is None:
-                    fatal("missing GitHub password")
-                logging.debug('connect to GitHub as %r with password' % (github_user,))
-                gha = github.Github(github_user, github_password)
-                ghuser = gha.get_user()
+        elif cx.opts['github']:
+            if cx.opts['register']:
+                ghuser = cx.github.main().root().get_user().get_user()
                 logging.debug('create GitHub authorization')
-                if not opts['--dry-run']:
+                if not cx.dry_run:
                     auth = ghuser.create_authorization(scopes=['public_repo'], note= myname + ' version ' + myversion)
                     print auth.token
-                return
-        if github_user not in github_users:
-            fatal('missing token for GitHub user %r' % github_user)
-        github_default_user = github_users.get(github_user) # Default user
-        if opts['github']:
-            if opts['list'] and opts['users']:
-                users = list(github_default_user.org.get_members())
+            elif cx.opts['list'] and cx.opts['users']:
+                users = list(cx.github.default_connection().org().get_members())
                 users.sort(key=lambda u: (u.login, u.name))
                 for user in users:
                     print '%-20s %-30s %s' % (user.login, user.name or '', user.email or '')
-                return
-            if opts['list'] and opts['repos']:
-                repos = github_default_user.org.get_repos()
+            elif cx.opts['list'] and cx.opts['repos']:
+                repos = cx.github.default_connection().org().get_repos()
                 for repo in repos:
                     print repo.name
-                return
-            repo_name = opts['<repo-name>']
-            if opts['list'] and opts['issues']:
-                repo = github_default_user.org.get_repo(repo_name)
+            elif cx.opts['list'] and cx.opts['issues']:
+                repo_name = cx.opts['<repo-name>']
+                repo = cx.github.default_connection().repo(repo_name)
                 all_issues = []
-                if opts['--open'] or not opts['--closed']:
+                if cx.opts['--open'] or not cx.opts['--closed']:
+                    logging.debug('%s get_issues(state="open")' % (cx.github.default_connection().debugtag(repo=repo),))
                     all_issues += repo.get_issues(state='open')
-                if opts['--closed'] or not opts['--open']:
+                if cx.opts['--closed'] or not cx.opts['--open']:
+                    logging.debug('%s get_issues(state="closed")' % (cx.github.default_connection().debugtag(repo=repo),))
                     all_issues += repo.get_issues(state='closed')
                 all_issues.sort(key=lambda p: p.number)
                 for issue in all_issues:
                     print '%-5s %-10s %s' % (issue.number, issue.state, issue.title)
-                return
-            if opts['dump'] and opts['issue']:
+            elif cx.opts['dump'] and cx.opts['issue']:
+                repo_name = cx.opts['<repo-name>']
                 try:
-                    issue_number = int(opts['<issue-number>'])
+                    issue_number = int(cx.opts['<issue-number>'])
                 except ValueError:
                     fatal('invalid <issue-number>')
-                repo = github_default_user.org.get_repo(repo_name)
+                repo = cx.github.default_connection().repo(repo_name)
+                logging.debug('%s get_issue(%r)' % (cx.github.default_connection().debugtag(repo=repo), issue_number))
                 github_dump_issue(repo.get_issue(issue_number))
-                return
-        if opts['migrate']:
-            mantis_url_base = mantis_url[:mantis_url.index('/api/')]
+        elif cx.opts['migrate']:
             try:
-                issue_id = int(opts['<issue-id>'])
+                issue_id = int(cx.opts['<issue-id>'])
             except ValueError:
                 fatal('invalid <issue-id>')
-            repo_name = opts['<repo-name>']
-            mantis_issue = soap_service(mc, 'mc_issue_get', issue_id=issue_id, **mantis_credentials)
-            mantis_issue_url = mantis_url_base + '/view.php?id=' + str(mantis_issue.id)
+            repo_name = cx.opts['<repo-name>']
+            mantis_issue = cx.mantis.service_cred('mc_issue_get', issue_id=issue_id)
+            mantis_issue_url = cx.mantis.url_base() + '/view.php?id=' + str(mantis_issue.id)
             mantis_issue_number = '%07u' % mantis_issue.id
             mantis_link = '[mantis:' + mantis_issue_number + '](' + mantis_issue_url + ')'
-            creator_gh, reporter_ref, reporter_tag = resolve_user(config, github_users, mantis_issue.reporter)
-            if creator_gh is None:
-                creator_gh = github_default_user
-            creator_gh.repo = creator_gh.org.get_repo(repo_name)
+            creator_ghc, reporter_ref, reporter_tag = cx.resolve_user(mantis_issue.reporter)
+            if creator_ghc is None:
+                creator_ghc = cx.github.default_connection()
+            repo = creator_ghc.repo(repo_name)
             label_name = 'mantis2github'
+            label_colour = '034c31' # Mantis logo text colour
+            label = None
             try:
-                label = creator_gh.repo.get_label(label_name)
+                logging.debug('%s create_label(%r, %r)' % (creator_ghc.debugtag(repo=repo), label_name, label_colour))
+                if not cx.dry_run:
+                    label = repo.create_label(label_name, label_colour)
+                #logging.debug('%s get_label(%r)' % (creator_ghc.debugtag(repo=repo), label_name))
+                #label = repo.get_label(label_name)
             except github.GithubException, e:
-                if e.status == 404:
-                    fatal('GitHub repo %r does not have label %r' % (repo_name, label_name))
-                raise
+                if e.status != 422:
+                    raise
+                logging.debug('%s get_label(%r)' % (creator_ghc.debugtag(repo=repo), label_name))
+                label = repo.get_label(label_name)
+                if label.color.lower() != label_colour:
+                    logging.debug('%s label %r edit(name=%r, color=%r)' % (creator_ghc.debugtag(repo=repo), label_name, label_name, label_colour))
+                    if not cx.dry_run:
+                        label.edit(label_name, label_colour)
             body = []
             if reporter_tag:
                 body += [reporter_tag, ' reported:\n\n']
             body += [mantis_text_to_markdown(mantis_issue.description)]
             # This must be the first comment to make it easy to later detect and cross-reference Mantis
             # issues to GitHub issues.
-            comments = [(creator_gh,
-                    'Originally reported as **' + mantis_link + '**'
+            comments = [(creator_ghc,
+                    'Originally reported as **' + mantis_link + '**' +
                     (' by ' + reporter_ref if reporter_ref else '') +
                     ' at ' + mantis_issue.date_submitted.ctime() + '.'
                 )]
-            github_assignee = None
-            if hasattr(mantis_issue, 'handler') and mantis_issue.handler:
-                github_assignee_login = config.user_map.get(mantis_issue.handler.name)
-                if github_assignee_login:
-                    github_assignee = github_default_user.account.get_user(github_assignee_login)
+            github_assignee = cx.map_user(getattr(mantis_issue, 'handler', None))
             body += ['\n\nCan reproduce: **', mantis_issue.reproducibility.name, '**']
             if hasattr(mantis_issue, 'steps_to_reproduce') and mantis_issue.steps_to_reproduce:
                 body += ['\n\nTo reproduce:\n\n', mantis_text_to_markdown(mantis_issue.steps_to_reproduce)]
             if hasattr(mantis_issue, 'additional_information') and mantis_issue.additional_information:
                 body += ['\n\n' + mantis_text_to_markdown(mantis_issue.additional_information)]
-            createargs = {}
-            createargs['title'] = unicode(mantis_issue.summary)
-            createargs['body'] = u''.join(body)
-            createargs['labels'] = [label]
+            title = unicode(mantis_issue.summary)
+            body = u''.join(body)
             if hasattr(mantis_issue, 'notes') and mantis_issue.notes:
                 for note in mantis_issue.notes:
-                    noter_github, noter_ref, noter_tag = resolve_user(config, github_users, note.reporter)
-                    body = []
-                    body += ['At ', note.date_submitted.ctime()]
-                    if noter_github is None:
-                        noter_github = github_default_user
-                        body += [' ', noter_tag, ' commented']
+                    noter_ghc, noter_ref, noter_tag = cx.resolve_user(note.reporter)
+                    note_body = []
+                    note_body += ['At ', note.date_submitted.ctime()]
+                    if noter_ghc is None:
+                        noter_ghc = cx.github.default_connection()
+                        note_body += [' ', noter_tag, ' commented']
                     else:
                         noter_tag = None
-                    body += [':']
+                    note_body += [':']
                     if hasattr(note, 'time_tracking') and note.time_tracking:
                         hours = note.time_tracking / 60
                         minutes = note.time_tracking % 60
-                        body += ['\n\nTime spent: **%u:%02u**' % (hours, minutes)]
+                        note_body += ['\n\nTime spent: **%u:%02u**' % (hours, minutes)]
                     if hasattr(note, 'text') and note.text:
-                        body += ['\n\n', mantis_text_to_markdown(note.text)]
-                    comments.append((noter_github, ''.join(body)))
-            # TODO: close the issue before the migration comment
-            comments.append((github_default_user,
+                        note_body += ['\n\n', mantis_text_to_markdown(note.text)]
+                    comments.append((noter_ghc, ''.join(note_body)))
+            resolution = getattr(getattr(mantis_issue, 'resolution', None), 'name', None)
+            closemark = object()
+            if resolution in ('open', 'reopened'):
+                pass
+            elif resolution in ('fixed'):
+                comments.append((creator_ghc, 'Issue **closed** in Mantis at ' + mantis_issue.last_updated.ctime() + '.'))
+                comments.append((creator_ghc, closemark))
+            else:
+                logging.warn('unknown Mantis resolution %r -- leaving issue open' % (resolution,))
+            comments.append((cx.github.default_connection(),
                     'Issue migrated from Mantis to GitHub' +
                     ' at ' + datetime.datetime.now().ctime() +
                     ' using [' + myname + '](https://github.com/servalproject/serval-tools/blob/master/bin/' + myname + ') version ' + myversion + '.'
                 ))
-            logging.debug('GitHub login %r repo %r create_issue(title=%r body=%r labels=[%s])' % (
-                    creator_gh.login,
-                    creator_gh.repo.name,
-                    createargs['title'],
-                    createargs['body'],
-                    ','.join(label.name for label in createargs['labels']),
-                ))
+            logging.debug('%s create_issue(title=%r body=%r labels=[%s])' % (creator_ghc.debugtag(repo=repo), title, body, label_name))
+            issue = None
             issue_number = None
-            if not opts['--dry-run']:
-                creator_gh.issue = creator_gh.repo.create_issue(**createargs)
-                issue_number = creator_gh.issue.number
+            if not cx.dry_run:
+                issue = repo.create_issue(title=title, body=body, labels=[label])
+                issue_number = issue.number
             if github_assignee is not None:
-                logging.debug('GitHub login %r repo %r issue %r edit(assignee=%r)' % (creator_gh.login, creator_gh.repo.name, issue_number, github_assignee.login))
-                if not opts['--dry-run']:
-                    creator_gh.issue.edit(assignee=github_assignee)
-            if creator_gh.issue is not None and creator_gh.issue.assignee is None:
-                logging.warn('cannot assign issue to %r' % (github_assignee.login,))
-                comments.insert(1, (github_default_user, 'Assigned to Mantis user ' + mantis_user_markdown(mantis_issue.handler) + '.'))
-            for commenter_gh, comment in comments:
-                if commenter_gh.repo is None:
-                    commenter_gh.repo = commenter_gh.org.get_repo(repo_name)
-                logging.debug('GitHub login %r repo %r issue %r create_comment(%r)' % (commenter_gh.login, commenter_gh.repo.name, issue_number, comment))
-                if not opts['--dry-run']:
-                    if commenter_gh.issue is None:
-                        commenter_gh.issue = commenter_gh.repo.get_issue(issue_number)
-                    commenter_gh.issue.create_comment(comment)
+                logging.debug('%s edit(assignee=%r)' % (creator_ghc.debugtag(issue=issue), github_assignee.login))
+                if not cx.dry_run:
+                    issue.edit(assignee=github_assignee)
+                    if getattr(issue.assignee, 'login', None) != github_assignee.login:
+                        logging.warn('cannot assign issue to %r -- adding GitHub comment instead' % (github_assignee.login,))
+                        comments.insert(1, (cx.github.default_connection(), 'Assigned to Mantis user ' + mantis_user_markdown(mantis_issue.handler) + '.'))
+            for commenter_ghc, comment_body in comments:
+                commenter_repo = commenter_ghc.repo(repo_name)
+                if comment_body is closemark:
+                    logging.debug('%s edit(state="closed")' % (commenter_ghc.debugtag(repo=commenter_repo),))
+                    if not cx.dry_run:
+                        issue.edit(state='closed')
+                        if issue.state != 'closed':
+                            logging.warn('cannot close issue #%r' % (issue.number,))
+                else:
+                    logging.debug('%s get_issue(%r)' % (commenter_ghc.debugtag(repo=commenter_repo), issue_number))
+                    if not cx.dry_run:
+                        commenter_issue = commenter_repo.get_issue(issue_number)
+                    logging.debug('%s issue=%r create_comment(%r)' % (commenter_ghc.debugtag(repo=commenter_repo), issue_number, comment_body))
+                    if not cx.dry_run:
+                        commenter_issue.create_comment(comment_body)
             # TODO: handle project
             # TODO: handle version and target version
             # TODO: handle severity
@@ -322,17 +294,16 @@ def main():
             #   - cache map locally
             #   - command to edit comments referring to imported Mantis issues,
             #     to refer to GitHub issues instead
-            return
     except suds.WebFault, e:
-        if debug:
+        if cx.debug:
             traceback.print_exc()
         fatal(e)
     except IOError, e:
-        if debug:
+        if cx.debug:
             traceback.print_exc()
-        fatal('%s: %s' % (mantis_url or '<Unknown URL>', e))
+        fatal('%s: %s' % (cx.mantis.url or '<Unknown URL>', e))
     except github.GithubException, e:
-        if debug:
+        if cx.debug:
             traceback.print_exc()
         fatal(e.data.get('message', 'Unknown error'))
 
@@ -343,91 +314,227 @@ def fatal(message):
 def serval_tools_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 
-class Config(object):
-    mantis_url = None
-    mantis_user = None
-    mantis_password = None
-    github_users = {}
-    user_map = {}
+class MantisInterface(object):
+    url = None
+    user = None
+    password = None
+    _client = None
 
-class GithubUser(object):
+    def read_config(self, cp):
+        try:
+            self.url = cp.get('mantis', 'url', os.environ)
+        except ConfigParser.NoOptionError:
+            pass
+        try:
+            self.user = cp.get('mantis', 'user', os.environ)
+        except ConfigParser.NoOptionError:
+            pass
+        try:
+            self.password = cp.get('mantis', 'password', os.environ)
+        except ConfigParser.NoOptionError:
+            pass
+
+    def url_base(self):
+        if not self.url:
+            fatal("missing Mantis URL")
+        try:
+            return self.url[:self.url.index('/api/')]
+        except ValueError:
+            return self.url
+
+    def url_soap(self):
+        return self.url_base() + '/api/soap/mantisconnect.php?wsdl'
+
+    def client(self):
+        if not self._client:
+            url = self.url_soap()
+            logging.debug('create Mantis SOAP client, url=%r' % (url,))
+            self._client = suds.client.Client(url)
+        return self._client
+
+    def service(self, method, **kwargs):
+        '''This method exists to create a single code path to invoking SOAP services, that can be
+        logged.
+        '''
+        safe_kwargs = dict(kwargs)
+        if 'password' in safe_kwargs:
+            safe_kwargs['password'] = '***'
+        client = self.client()
+        logging.debug('%s(%s)' % (method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems())))
+        return getattr(client.service, method)(**kwargs)
+
+    def service_cred(self, method, **kwargs):
+        _kwargs = dict(self.credentials())
+        _kwargs.update(kwargs)
+        return self.service(method, **_kwargs)
+
+    def credentials(self):
+        if self.user is None:
+            fatal("missing Mantis user name")
+        if self.password is None:
+            fatal("missing Mantis password")
+        return {'username': self.user, 'password': self.password}
+
+    def get_issues(self, project_ids=None, per_page=100, **kwopts):
+        if not project_ids:
+            project_ids = []
+            projects = self.service_cred('mc_projects_get_user_accessible', **kwopts)
+            for project in projects:
+                project_ids.append(project.id)
+        all_issues = []
+        for project_id in project_ids:
+            page = 1
+            while True:
+                issues = self.service_cred('mc_project_get_issues', project_id=project_id, page_number=page, per_page=per_page, **kwopts)
+                all_issues += issues
+                if len(issues) < per_page:
+                    break
+                page += 1
+        return all_issues
+
+class GithubInterface(object):
     login = None
-    account = None
-    org = None
-    repo = None
-    issue = None
+    password = None
+    user_tokens = ()
+    _main = None
+    _connections = ()
 
-def read_config_file(path):
-    config = Config()
-    if os.path.exists(path):
-        stat = os.stat(path)
-        if stat.st_uid != os.getuid():
-            logging.warn("%s exists but is owned by uid %s (should be %s)" % (path, stat.st_uid, getuid()))
-        elif stat.st_mode & 0177:
-            logging.warn("%s exists but has mode %#o (should be at most 0600)" % (path, stat.st_mode & 0777))
-        else:
-            try:
+    def read_config(self, cp):
+        try:
+            self.login = cp.get('github', 'login', os.environ)
+        except ConfigParser.NoOptionError:
+            pass
+        try:
+            self.password = cp.get('github', 'password', os.environ)
+        except ConfigParser.NoOptionError:
+            pass
+        self.user_tokens = {}
+        for key, value in cp.items('github users'):
+            self.user_tokens[key] = cp.get('github users', key, os.environ)
+
+    def main(self):
+        if not self._main:
+            self._main = GithubConnection()
+            self._main.login = self.login
+            self._main.password = self.password
+        return self._main
+
+    def connection(self, login):
+        if not self._connections:
+            self._connections = {}
+        if login not in self._connections:
+            conn = None
+            if login in self.user_tokens:
+                conn = GithubConnection()
+                conn.login = login
+                conn.token = self.user_tokens[login]
+            self._connections[login] = conn
+        return self._connections[login]
+
+    def default_connection(self):
+        return self.connection(self.login)
+
+class GithubConnection(object):
+    login = None
+    password = None
+    token = None
+    org_name = 'servalproject'
+    _root = None
+    _org = None
+    _repos = None
+
+    def debugtag(self, org=None, repo=None, issue=None):
+        if issue:
+            repo = issue.repository
+        if repo:
+            org = repo.organization
+        r = ['GitHub login %r' % (self.login,)]
+        if org:
+            r += ['org %r' % org.name]
+        if repo:
+            r += ['repo %r' % repo.name]
+        if issue:
+            r += ['issue %r' % issue.number]
+        return ' '.join(r)
+
+    def root(self):
+        if not self._root:
+            import github
+            if self.password:
+                logging.debug('connect to GitHub as %r using password' % (self.login,))
+                self._root = github.Github(self.login, self.password)
+            elif self.token:
+                logging.debug('connect to GitHub as %r using token' % (self.login,))
+                self._root = github.Github(self.token)
+            else:
+                fatal('missing GitHub password or token for login %r' % (self.login,))
+        return self._root
+
+    def org(self):
+        if not self._org:
+            root = self.root()
+            logging.debug('%s get_organization(%r)' % (self.debugtag(), self.org_name))
+            self._org = root.get_organization(self.org_name)
+        return self._org
+
+    def repo(self, name):
+        if not self._repos:
+            self._repos = {}
+        if name not in self._repos:
+            org = self.org()
+            logging.debug('%s get_repo(%r)' % (self.debugtag(org=org), name))
+            self._repos[name] = org.get_repo(name)
+        return self._repos[name]
+
+class Context(object):
+    debug = False
+    dry_run = False
+    opts = None
+    mantis = MantisInterface()
+    github = GithubInterface()
+    user_map = ()
+
+    def read_config_file(self, path):
+        if os.path.exists(path):
+            stat = os.stat(path)
+            if stat.st_uid != os.getuid():
+                logging.warn("%s exists but is owned by uid %s (should be %s) -- ignored" % (path, stat.st_uid, getuid()))
+            elif stat.st_mode & 0177:
+                logging.warn("%s exists but has mode %#o (should be at most 0600) -- ignored" % (path, stat.st_mode & 0777))
+            else:
                 cp = ConfigParser.SafeConfigParser()
                 cp.optionxform = str
                 cp.readfp(file(path))
-                try:
-                    config.mantis_url = cp.get('mantis', 'url', os.environ)
-                except ConfigParser.NoOptionError:
-                    pass
-                try:
-                    config.mantis_user = cp.get('mantis', 'user', os.environ)
-                except ConfigParser.NoOptionError:
-                    pass
-                try:
-                    config.mantis_password = cp.get('mantis', 'password', os.environ)
-                except ConfigParser.NoOptionError:
-                    pass
-                try:
-                    config.github_user = cp.get('github', 'user', os.environ)
-                except ConfigParser.NoOptionError:
-                    pass
-                try:
-                    config.github_password = cp.get('github', 'password', os.environ)
-                except ConfigParser.NoOptionError:
-                    pass
-                config.github_users = {}
-                for key, value in cp.items('github users'):
-                    config.github_users[key] = cp.get('github users', key, os.environ)
-                config.user_map = {}
+                self.mantis.read_config(cp)
+                self.github.read_config(cp)
+                self.user_map = {}
                 for key, value in cp.items('user map'):
-                    config.user_map[key] = cp.get('user map', key, os.environ)
-            except ValueError, e:
-                logging.error('%s, line %d: malformed line' % (path, lnum))
-            except IOError, e:
-                logging.error(e)
-    return config
+                    self.user_map[key] = cp.get('user map', key, os.environ)
 
-def mantis_get_issues(mc, project_ids=None, per_page=100, **kwopts):
-    if not project_ids:
-        project_ids = []
-        projects = soap_service(mc, 'mc_projects_get_user_accessible', **kwopts)
-        for project in projects:
-            project_ids.append(project.id)
-    all_issues = []
-    for project_id in project_ids:
-        page = 1
-        while True:
-            issues = soap_service(mc, 'mc_project_get_issues', project_id=project_id, page_number=page, per_page=per_page, **kwopts)
-            all_issues += issues
-            if len(issues) < per_page:
-                break
-            page += 1
-    return all_issues
+    def map_user(self, mantis_user):
+        '''Convert a Mantis AccountData object into a GitHub NamedUser object.'''
+        if mantis_user is None:
+            return None
+        login = self.user_map.get(mantis_user.name, None)
+        if not login:
+            return None
+        conn = self.github.connection(login)
+        if conn:
+            return conn.get_user()
+        return self.github.main().root().get_user(login)
 
-def soap_service(client, method, **kwargs):
-    '''This method exists to create a single code path to invoking SOAP services, that can be
-    logged.
-    '''
-    safe_kwargs = dict(kwargs)
-    if 'password' in safe_kwargs:
-        safe_kwargs['password'] = '***'
-    logging.debug('%s(%s)' % (method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems())))
-    return getattr(client.service, method)(**kwargs)
+    def resolve_user(self, mantis_account):
+        login = self.user_map.get(mantis_account.name)
+        ghc, ref, tag = None, None, None
+        if login is None:
+            ref = mantis_user_markdown(mantis_account)
+            tag = mantis_user_details(mantis_account)
+        else:
+            ref = '@' + login
+            tag = ref
+            ghc = self.github.connection(login)
+        logging.debug('resolved mantis user %r to %r %s' % (mantis_account.name, tag, '(auth)' if ghc else '(no auth)'))
+        return ghc, ref, tag
 
 def mantis_user_str(user):
     if not user:
@@ -500,28 +607,6 @@ def github_user_str(user):
 
 def github_milestone_str(milestone):
     return '%s (%s) %s' % (milestone.number, milestone.due_on, milestone.title) if milestone else 'None'
-
-def map_user(config, gh, mantis_user):
-    '''Convert a Mantis AccountData object into a GitHub NamedUser object.'''
-    if mantis_user is None:
-        return None
-    ghname = config.user_map.get(mantis_user.name, None)
-    return gh.get_user(ghname) if ghname else None
-
-def resolve_user(config, github_users, mantis_account):
-    github_reporter_login = config.user_map.get(mantis_account.name)
-    gh, ref, tag = None, None, None
-    if github_reporter_login is None:
-        ref = mantis_user_markdown(mantis_account)
-        tag = mantis_user_details(mantis_account)
-    else:
-        ref = '@' + github_reporter_login
-        tag = ref
-        github_reporter = github_users.get(github_reporter_login)
-        if github_reporter and github_reporter.org is not None:
-            gh = github_reporter
-    logging.debug('resolved mantis user %r to %r %s' % (mantis_account.name, tag, '(auth)' if gh else '(no auth)'))
-    return gh, ref, tag
 
 def mantis_text_to_markdown(text):
     # Remove leading blank lines.
