@@ -36,7 +36,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.4'
+myversion = '0.41'
 
 import sys
 import traceback
@@ -45,7 +45,6 @@ import os.path
 import logging
 import ConfigParser
 import datetime
-import suds
 import urllib2
 import re
 
@@ -294,10 +293,6 @@ def main():
             #   - cache map locally
             #   - command to edit comments referring to imported Mantis issues,
             #     to refer to GitHub issues instead
-    except suds.WebFault, e:
-        if cx.debug:
-            traceback.print_exc()
-        fatal(e)
     except IOError, e:
         if cx.debug:
             traceback.print_exc()
@@ -347,6 +342,7 @@ class MantisInterface(object):
 
     def client(self):
         if not self._client:
+            import suds
             url = self.url_soap()
             logging.debug('create Mantis SOAP client, url=%r' % (url,))
             self._client = suds.client.Client(url)
@@ -359,9 +355,15 @@ class MantisInterface(object):
         safe_kwargs = dict(kwargs)
         if 'password' in safe_kwargs:
             safe_kwargs['password'] = '***'
-        client = self.client()
-        logging.debug('%s(%s)' % (method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems())))
-        return getattr(client.service, method)(**kwargs)
+        import suds
+        try:
+            client = self.client()
+            logging.debug('%s(%s)' % (method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems())))
+            return getattr(client.service, method)(**kwargs)
+        except suds.WebFault, e:
+            if cx.debug:
+                traceback.print_exc()
+            fatal(e)
 
     def service_cred(self, method, **kwargs):
         _kwargs = dict(self.credentials())
