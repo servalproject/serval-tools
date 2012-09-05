@@ -36,7 +36,9 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.42'
+myversion = '0.5'
+myorg = 'servalproject'
+myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
 
 import sys
 import traceback
@@ -189,43 +191,113 @@ def main():
             mantis_issue_url = cx.mantis.url_base() + '/view.php?id=' + str(mantis_issue.id)
             mantis_issue_number = '%07u' % mantis_issue.id
             mantis_link = '[mantis:' + mantis_issue_number + '](' + mantis_issue_url + ')'
+            # Resolve the Mantis reporter to a GitHub user.
             creator_ghc, reporter_ref, reporter_tag = cx.resolve_user(mantis_issue.reporter)
             if creator_ghc is None:
                 creator_ghc = cx.github.default_connection()
             repo = creator_ghc.repo(repo_name)
-            label_name = 'mantis2github'
+            logging.debug('%s get_milestones(state="open")' % (creator_ghc.debugtag(repo=repo),))
+            repo_milestones_open = list(repo.get_milestones(state='open'))
+            logging.debug('   got %r' % [milestone.title for milestone in repo_milestones_open])
+            logging.debug('%s get_milestones(state="closed")' % (creator_ghc.debugtag(repo=repo),))
+            repo_milestones_closed = list(repo.get_milestones(state='closed'))
+            logging.debug('   got %r' % [milestone.title for milestone in repo_milestones_closed])
+            repo_milestones = repo_milestones_open + repo_milestones_closed
+            logging.debug('%s get_labels()' % (creator_ghc.debugtag(repo=repo),))
+            repo_labels = dict((label.name, label) for label in repo.get_labels())
+            logging.debug('   got %r' % list(repo_labels))
+            # Create "mantis" label unless it already exists, in which case make sure it is the
+            # right colour.
+            label_name = 'mantis'
             label_colour = '034c31' # Mantis logo text colour
-            label = None
-            try:
-                logging.debug('%s create_label(%r, %r)' % (creator_ghc.debugtag(repo=repo), label_name, label_colour))
+            label = repo_labels.get(label_name)
+            if label is None:
+                logging.debug('%s create_label(name=%r, color=%r)' % (creator_ghc.debugtag(repo=repo), label_name, label_colour))
                 if not cx.dry_run:
-                    label = repo.create_label(label_name, label_colour)
-                #logging.debug('%s get_label(%r)' % (creator_ghc.debugtag(repo=repo), label_name))
-                #label = repo.get_label(label_name)
-            except github.GithubException, e:
-                if e.status != 422:
-                    raise
-                logging.debug('%s get_label(%r)' % (creator_ghc.debugtag(repo=repo), label_name))
-                label = repo.get_label(label_name)
-                if label.color.lower() != label_colour:
-                    logging.debug('%s label=%r edit(name=%r, color=%r)' % (creator_ghc.debugtag(repo=repo), label_name, label_name, label_colour))
-                    if not cx.dry_run:
-                        label.edit(label_name, label_colour)
+                    label = repo.create_label(name=label_name, color=label_colour)
+                    if not label:
+                        fatal('cannot create label %r' % (label_name,))
+            elif label.color.lower() != label_colour:
+                logging.debug('%s label=%r edit(name=%r, color=%r)' % (creator_ghc.debugtag(repo=repo), label_name, label_name, label_colour))
+                if not cx.dry_run:
+                    label.edit(name=label_name, color=label_colour)
+            # Start assembling the body, comments and labels of the GitHub issue.
+            labels = [label]
             body = []
+            comments = [] # [(GithubInterface, str|closemark)]
+            closemark = object()
             if reporter_tag:
                 body += [reporter_tag, ' reported:\n\n']
             body += [mantis_text_to_markdown(mantis_issue.description)]
             # This must be the first comment to make it easy to later detect and cross-reference Mantis
             # issues to GitHub issues.
-            comments = [(creator_ghc,
+            comments += [(creator_ghc,
                     'Originally reported as **' + mantis_link + '**' +
-                    (' by ' + reporter_ref if reporter_ref else '') +
+                    (' by ' + reporter_ref if reporter_tag else '') +
                     ' at ' + mantis_issue.date_submitted.ctime() + '.'
                 )]
             github_assignee = cx.map_user(getattr(mantis_issue, 'handler', None))
-            body += ['\n\nCan reproduce: **', mantis_issue.reproducibility.name, '**']
+            body += ['\n']
+            resolution = getattr(getattr(mantis_issue, 'resolution', None), 'name', None)
+            if hasattr(mantis_issue, 'severity') and mantis_issue.severity:
+                body += ['\nMantis severity: **', mantis_issue.severity.name, '**']
+            if hasattr(mantis_issue, 'priority') and mantis_issue.priority:
+                body += ['\nMantis priority: **', mantis_issue.priority.name, '**']
+            if hasattr(mantis_issue, 'project') and mantis_issue.project:
+                body += ['\nMantis project: **', mantis_issue.project.name, '**']
+            if hasattr(mantis_issue, 'version') and mantis_issue.version:
+                body += ['\nProduct version: **', mantis_issue.version, '**']
+            target_version = None
+            if hasattr(mantis_issue, 'target_version') and mantis_issue.target_version:
+                body += ['\nTarget version: **', mantis_issue.target_version, '**']
+                target_version = mantis_issue.target_version
+            if hasattr(mantis_issue, 'fixed_in_version') and mantis_issue.fixed_in_version:
+                body += ['\nFixed in version: **', mantis_issue.fixed_in_version, '**']
+                target_version = mantis_issue.fixed_in_version
+            # Map target version or fixed-in version to GitHub milestone.
+            github_milestone = None
+            if target_version:
+                target_version = target_version.strip()
+                for milestone in repo_milestones:
+                    for word in target_version.split():
+                        if word not in milestone.title:
+                            break
+                    else:
+                        github_milestone = milestone
+                        break
+            # Translate Mantis resolution to GitHub label of the same name if it exists, otherwise
+            # label as 'duplicate', 'invalid' or 'wontfix' accordingly.
+            if resolution in repo_labels: # includes 'duplicate'
+                labels += [repo_labels[resolution]]
+            elif resolution == 'unable to reproduce':
+                if 'invalid' in repo_labels:
+                    labels += [repo_labels['invalid']]
+                elif 'wontfix' in repo_labels:
+                    labels += [repo_labels['wontfix']]
+            elif resolution in ('not fixable', "won't fix"):
+                if 'wontfix' in repo_labels:
+                    labels += [repo_labels['wontfix']]
+            # Translate Mantis severity level to GitHub label of the same name if it exists,
+            # otherwise label 'feature' and 'tweak' as an enhancement, and all others as bugs.
+            if hasattr(mantis_issue, 'severity') and mantis_issue.severity:
+                if mantis_issue.severity.name in repo_labels:
+                    labels += [repo_labels[mantis_issue.severity.name]]
+                elif mantis_issue.severity.name in ('feature', 'tweak'):
+                    if 'enhancement' in repo_labels:
+                        labels += [repo_labels['enhancement']]
+                else:
+                    if 'bug' in repo_labels:
+                        labels += [repo_labels['bug']]
+            # Translate Mantis tags into GitHub tags of the same name, if they exist.
+            if hasattr(mantis_issue, 'tags') and mantis_issue.tags:
+                body += ['\nMantis tags: ']
+                body += ('**%s**' % tag.name for tag in mantis_issue.tags)
+                for tag in mantis_issue.tags:
+                    if tag.name in repo_labels:
+                        labels += [repo_labels[tag.name]]
+            body += ['\nCan reproduce: **', mantis_issue.reproducibility.name, '**']
             if hasattr(mantis_issue, 'steps_to_reproduce') and mantis_issue.steps_to_reproduce:
-                body += ['\n\nTo reproduce:\n\n', mantis_text_to_markdown(mantis_issue.steps_to_reproduce)]
+                body += ['\nTo reproduce:\n\n', mantis_text_to_markdown(mantis_issue.steps_to_reproduce)]
             if hasattr(mantis_issue, 'additional_information') and mantis_issue.additional_information:
                 body += ['\n\n' + mantis_text_to_markdown(mantis_issue.additional_information)]
             title = unicode(mantis_issue.summary)
@@ -235,11 +307,8 @@ def main():
                     noter_ghc, noter_ref, noter_tag = cx.resolve_user(note.reporter)
                     note_body = []
                     note_body += ['At ', note.date_submitted.ctime()]
-                    if noter_ghc is None:
-                        noter_ghc = cx.github.default_connection()
+                    if noter_tag:
                         note_body += [' ', noter_tag, ' commented']
-                    else:
-                        noter_tag = None
                     note_body += [':']
                     if hasattr(note, 'time_tracking') and note.time_tracking:
                         hours = note.time_tracking / 60
@@ -247,34 +316,46 @@ def main():
                         note_body += ['\n\nTime spent: **%u:%02u**' % (hours, minutes)]
                     if hasattr(note, 'text') and note.text:
                         note_body += ['\n\n', mantis_text_to_markdown(note.text)]
-                    comments.append((noter_ghc, ''.join(note_body)))
-            resolution = getattr(getattr(mantis_issue, 'resolution', None), 'name', None)
-            closemark = object()
-            if resolution in ('open', 'reopened'):
+                    comments.append((noter_ghc or cx.github.default_connection(), ''.join(note_body)))
+            if resolution in ('open', 'reopened', 'suspended'):
                 pass
-            elif resolution in ('fixed'):
-                comments.append((creator_ghc, 'Issue **closed** in Mantis at ' + mantis_issue.last_updated.ctime() + '.'))
-                comments.append((creator_ghc, closemark))
             else:
-                logging.warn('unknown Mantis resolution %r -- leaving issue open' % (resolution,))
-            comments.append((cx.github.default_connection(),
-                    'Issue migrated from Mantis to GitHub' +
-                    ' at ' + datetime.datetime.now().ctime() +
-                    ' using [' + myname + '](https://github.com/servalproject/serval-tools/blob/master/bin/' + myname + ') version ' + myversion + '.'
-                ))
-            logging.debug('%s create_issue(title=%r body=%r labels=[%s])' % (creator_ghc.debugtag(repo=repo), title, body, label_name))
+                comments.append((creator_ghc,
+                        'Issue **closed** in Mantis at ' + mantis_issue.last_updated.ctime() +
+                        (', Mantis resolution: **' + resolution + '**.' if resolution else '') +
+                        '.'
+                    ))
+                resolution = None
+                comments.append((creator_ghc, closemark))
+            migration_body = ['Issue migrated from Mantis to GitHub']
+            if resolution:
+                migration_body += [' with Mantis resolution **', resolution, '**']
+                resolution = None
+            migration_body += [
+                    ' at ', datetime.datetime.now().ctime(),
+                    ' using [', myname, '](', myurl, ') version ', myversion
+                ]
+            comments.append((cx.github.default_connection(), ''.join(migration_body)))
+            logging.debug('%s create_issue(title=%r body=%r labels=[%s])' % (
+                    creator_ghc.debugtag(repo=repo), title, body, ','.join(label.name for label in labels)))
             issue = None
             issue_number = None
             if not cx.dry_run:
-                issue = repo.create_issue(title=title, body=body, labels=[label])
+                issue = repo.create_issue(title=title, body=body, labels=labels)
                 issue_number = issue.number
+            if github_milestone is not None:
+                logging.debug('%s edit(milestone=%r)' % (creator_ghc.debugtag(issue=issue), github_milestone.title))
+                if not cx.dry_run:
+                    issue.edit(milestone=github_milestone)
+                    if getattr(issue.milestone, 'id', None) != github_milestone.id:
+                        logging.warn('cannot set issue to milestone %r' % (github_milestone.title,))
             if github_assignee is not None:
                 logging.debug('%s edit(assignee=%r)' % (creator_ghc.debugtag(issue=issue), github_assignee.login))
                 if not cx.dry_run:
                     issue.edit(assignee=github_assignee)
                     if getattr(issue.assignee, 'login', None) != github_assignee.login:
                         logging.warn('cannot assign issue to %r -- adding GitHub comment instead' % (github_assignee.login,))
-                        comments.insert(1, (cx.github.default_connection(), 'Assigned to Mantis user ' + mantis_user_markdown(mantis_issue.handler) + '.'))
+                        comments.insert(1, (cx.github.default_connection(), 'Assigned to Mantis user ' + cx.mantis.user_markdown(mantis_issue.handler) + '.'))
             for commenter_ghc, comment_body in comments:
                 commenter_repo = commenter_ghc.repo(repo_name)
                 if comment_body is closemark:
@@ -290,11 +371,6 @@ def main():
                     logging.debug('%s issue=%r create_comment(%r)' % (commenter_ghc.debugtag(repo=commenter_repo), issue_number, comment_body))
                     if not cx.dry_run:
                         commenter_issue.create_comment(comment_body)
-            # TODO: handle project
-            # TODO: handle version and target version
-            # TODO: handle severity
-            # TODO: handle priority
-            # TODO: handle tags
             # TODO: handle attachments (import as Gists?)
             # TODO: handle relationships (links between issues)
             #   - command to build map
@@ -361,6 +437,15 @@ class MantisInterface(object):
             logging.debug('create Mantis SOAP client, url=%r' % (url,))
             self._client = suds.client.Client(url)
         return self._client
+
+    def user_markdown(self, user):
+        if not user:
+            return 'None'
+        mantis_user_url = self.url_base() + '/view_user_page.php?id=' + str(user.id)
+        # Do not include the user's real name or email here, even though it is available via SOAP,
+        # because we do not want to put people's email addresses in the clear on GitHub to be harvested
+        # by spammers.
+        return '**[' + user.name + '](' + mantis_user_url + ')**'
 
     def service(self, method, **kwargs):
         '''This method exists to create a single code path to invoking SOAP services, that can be
@@ -461,7 +546,7 @@ class GithubConnection(object):
     login = None
     password = None
     token = None
-    org_name = 'servalproject'
+    org_name = myorg
     _root = None
     _org = None
     _repos = None
@@ -544,21 +629,22 @@ class Context(object):
         login = self.user_map.get(mantis_user.name, None)
         if not login:
             return None
-        conn = self.github.connection(login)
-        if conn:
-            return conn.get_user()
         return self.github.main().root().get_user(login)
 
     def resolve_user(self, mantis_account):
+        '''Convert a Mantis AccountData object into a GitHub AuthenticatedUser object, plus some
+        text that can be used to link to the user.
+        '''
         login = self.user_map.get(mantis_account.name)
         ghc, ref, tag = None, None, None
         if login is None:
-            ref = mantis_user_markdown(mantis_account)
-            tag = mantis_user_details(mantis_account)
+            ref = self.mantis.user_markdown(mantis_account)
+            tag = ref
         else:
             ref = '@' + login
-            tag = ref
             ghc = self.github.connection(login)
+            if ghc is None:
+                tag = ref
         logging.debug('resolved mantis user %r to %r %s' % (mantis_account.name, tag, '(auth)' if ghc else '(no auth)'))
         return ghc, ref, tag
 
@@ -568,23 +654,6 @@ def mantis_user_str(user):
     r = [user.name]
     if user.real_name:
         r += [repr(user.real_name)]
-    if user.email:
-        r += ['<%s>' % user.email]
-    return ' '.join(r)
-
-def mantis_user_markdown(user):
-    if not user:
-        return 'None'
-    r = ['**' + user.name + '**']
-    d = mantis_user_details(user)
-    if d:
-        r += [d]
-    return ' '.join(r)
-
-def mantis_user_details(user):
-    r = []
-    if user.real_name:
-        r += [user.real_name]
     if user.email:
         r += ['<%s>' % user.email]
     return ' '.join(r)
@@ -643,7 +712,7 @@ def mantis_text_to_markdown(text):
         or  len(re.findall(r'^ *(DEBUG|WARN|INFO|ERROR):', text, flags=re.MULTILINE)) > 3
         or  len(re.findall(r'^ *[EWIDV]/', text, flags=re.MULTILINE)) > 3
         ):
-        text = '```' + text + '\n```'
+        text = '```\n' + text + '\n```'
     else:
         text = re.subn(r'^ {4,}', '   ', text, flags=re.MULTILINE)[0]
     return text
