@@ -3,11 +3,13 @@
 '''Usage:
     sp-mantis2github [options] mantis version
     sp-mantis2github [options] mantis wsdl
-    sp-mantis2github [options] mantis list users
     sp-mantis2github [options] mantis list projects
+    sp-mantis2github [options] mantis list project users [<project-id>]
+    sp-mantis2github [options] mantis list issue users
     sp-mantis2github [options] mantis list issues [<project-id>] [-C|--closed] [-O|--open]
     sp-mantis2github [options] mantis dump project <project-id>
     sp-mantis2github [options] mantis dump issue <issue-id>
+    sp-mantis2github [options] mantis add note <issue-id> <text>
     sp-mantis2github [options] github register
     sp-mantis2github [options] github list users
     sp-mantis2github [options] github list repos
@@ -20,7 +22,9 @@ Options:
     -h --help               Show this message
     --version               Show version and exit
     -D --debug              Enable debug logging
-    -n --dry-run            Do not write to GitHub, just perform all queries
+    -n --dry-run            Do not write to GitHub, do queries only
+    -t --testing            When migrating, do not modify the original Mantis issue
+    -f --force              When migrating, continue even if the issue is already migrated
     --config=PATH           Read config file [default: $HOME/.mantis2github]
     --mantis-url=URL        Connect to Mantis SOAP service at this URL (default taken from
                             $SERVAL_MANTIS_URL/api/soap/mantisconnect.php if set, or config file)
@@ -36,7 +40,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.5'
+myversion = '0.6'
 myorg = 'servalproject'
 myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
 
@@ -49,6 +53,8 @@ import ConfigParser
 import datetime
 import urllib2
 import re
+
+MIGRATION_TEXT = 'Issue migrated to GitHub'
 
 def main():
     logging.basicConfig(level=logging.INFO)
@@ -64,7 +70,11 @@ def main():
     cx.read_config_file(os.path.expanduser(os.path.expandvars(cx.opts['--config'])))
     if cx.opts['--debug']:
         cx.debug = True
+        cx.mantis.debug = True
+        cx.github.debug = True
     cx.dry_run = cx.opts['--dry-run']
+    cx.testing = cx.opts['--testing']
+    cx.force = cx.opts['--force']
     cx.mantis.url = cx.opts['--mantis-url'] or cx.mantis.url
     cx.mantis.user = cx.opts['--mantis-user'] or cx.mantis.user
     cx.mantis.password = cx.opts['--mantis-password'] or cx.mantis.password
@@ -72,6 +82,7 @@ def main():
     cx.github.password = cx.opts['--github-password'] or cx.github.password
     if cx.debug:
         logging.getLogger().setLevel(logging.DEBUG)
+    if cx.mantis.debug:
         logging.getLogger('suds').setLevel(logging.INFO)
     try:
         if cx.opts['mantis']:
@@ -95,11 +106,23 @@ def main():
                         print project
             elif cx.opts['dump'] and cx.opts['issue']:
                 try:
-                    issue_id = int(cx.opts['<issue-id>'])
+                    mantis_issue_id = int(cx.opts['<issue-id>'])
                 except ValueError:
                     fatal('invalid <issue-id>')
-                print cx.mantis.service_cred('mc_issue_get', issue_id=issue_id)
-            elif cx.opts['list'] and cx.opts['users']:
+                print cx.mantis.service_cred('mc_issue_get', issue_id=mantis_issue_id)
+            elif cx.opts['list'] and cx.opts['project'] and cx.opts['users']:
+                project_ids = []
+                if cx.opts['<project-id>']:
+                    try:
+                        project_ids.append(int(cx.opts['<project-id>']))
+                    except ValueError:
+                        fatal('invalid <project-id>')
+                all_users = cx.mantis.get_users(project_ids)
+                for user in all_users.itervalues():
+                    values = (getattr(user, 'name', ''), getattr(user, 'real_name', ''), getattr(user, 'email', ''))
+                    if values != ('', '', ''):
+                        print '%-20s %-30s %s' % values
+            elif cx.opts['list'] and cx.opts['issue'] and cx.opts['users']:
                 all_issues = cx.mantis.get_issues()
                 users = {}
                 for issue in all_issues:
@@ -134,7 +157,14 @@ def main():
                         resolutions += ['fixed']
                     if resolutions and issue.resolution.name not in resolutions:
                         continue
-                    print '%-5s %-10s %s' % (issue.id, issue.resolution.name, issue.summary)
+                    print '%-5s %-10s %s %s' % (issue.id, issue.resolution.name, 'A' if getattr(issue, 'attachments', None) else ' ', issue.summary)
+            elif cx.opts['add'] and cx.opts['note']:
+                try:
+                    mantis_issue_id = int(cx.opts['<issue-id>'])
+                except ValueError:
+                    fatal('invalid <issue-id>')
+                if not cx.dry_run:
+                    cx.mantis.add_note(mantis_issue_id, cx.opts['<text>'])
         elif cx.opts['github']:
             if cx.opts['register']:
                 root = cx.github.main().root()
@@ -183,18 +213,16 @@ def main():
                 github_dump_issue(repo.get_issue(issue_number))
         elif cx.opts['migrate']:
             try:
-                issue_id = int(cx.opts['<issue-id>'])
+                mantis_issue_id = int(cx.opts['<issue-id>'])
             except ValueError:
                 fatal('invalid <issue-id>')
             repo_name = cx.opts['<repo-name>']
-            mantis_issue = cx.mantis.service_cred('mc_issue_get', issue_id=issue_id)
-            mantis_issue_url = cx.mantis.url_base() + '/view.php?id=' + str(mantis_issue.id)
-            mantis_issue_number = '%07u' % mantis_issue.id
-            mantis_link = '[mantis:' + mantis_issue_number + '](' + mantis_issue_url + ')'
+            # Fetch the original Mantis issue.
+            mantis_issue = cx.mantis.service_cred('mc_issue_get', issue_id=mantis_issue_id)
             # Resolve the Mantis reporter to a GitHub user.
-            creator_ghc, reporter_ref, reporter_tag = cx.resolve_user(mantis_issue.reporter)
-            if creator_ghc is None:
-                creator_ghc = cx.github.default_connection()
+            authentic_creator_ghc, reporter_ref, reporter_tag = cx.resolve_user(mantis_issue.reporter)
+            creator_ghc = authentic_creator_ghc if authentic_creator_ghc else cx.github.default_connection()
+            # Discover the destination GitHub repo.
             repo = creator_ghc.repo(repo_name)
             logging.debug('%s get_milestones(state="open")' % (creator_ghc.debugtag(repo=repo),))
             repo_milestones_open = list(repo.get_milestones(state='open'))
@@ -206,8 +234,8 @@ def main():
             logging.debug('%s get_labels()' % (creator_ghc.debugtag(repo=repo),))
             repo_labels = dict((label.name, label) for label in repo.get_labels())
             logging.debug('   got %r' % list(repo_labels))
-            # Create "mantis" label unless it already exists, in which case make sure it is the
-            # right colour.
+            # Create GitHub "mantis" label unless it already exists, in which case make sure it is
+            # the right colour.
             label_name = 'mantis'
             label_colour = '034c31' # Mantis logo text colour
             label = repo_labels.get(label_name)
@@ -224,15 +252,15 @@ def main():
             # Start assembling the body, comments and labels of the GitHub issue.
             labels = [label]
             body = []
-            comments = [] # [(GithubInterface, str|closemark)]
+            comments = [] # [(datetime, GithubInterface, str|closemark)]
             closemark = object()
             if reporter_tag:
                 body += [reporter_tag, ' reported:\n\n']
-            body += [mantis_text_to_markdown(mantis_issue.description)]
+            body += [cx.mantis.text_to_markdown(mantis_issue.description)]
             # This must be the first comment to make it easy to later detect and cross-reference Mantis
             # issues to GitHub issues.
-            comments += [(creator_ghc,
-                    'Originally reported as **' + mantis_link + '**' +
+            comments += [(mantis_issue.date_submitted, creator_ghc,
+                    'Originally reported as **' + cx.mantis.issue_markdown(mantis_issue.id) + '**' +
                     (' by ' + reporter_ref if reporter_tag else '') +
                     ' at ' + mantis_issue.date_submitted.ctime() + '.'
                 )]
@@ -297,52 +325,131 @@ def main():
                         labels += [repo_labels[tag.name]]
             body += ['\nCan reproduce: **', mantis_issue.reproducibility.name, '**']
             if hasattr(mantis_issue, 'steps_to_reproduce') and mantis_issue.steps_to_reproduce:
-                body += ['\nTo reproduce:\n\n', mantis_text_to_markdown(mantis_issue.steps_to_reproduce)]
+                body += ['\nTo reproduce:\n\n', cx.mantis.text_to_markdown(mantis_issue.steps_to_reproduce)]
             if hasattr(mantis_issue, 'additional_information') and mantis_issue.additional_information:
-                body += ['\n\n' + mantis_text_to_markdown(mantis_issue.additional_information)]
+                body += ['\n\n' + cx.mantis.text_to_markdown(mantis_issue.additional_information)]
             title = unicode(mantis_issue.summary)
             body = u''.join(body)
+            # Convert Mantis attachments and notes into GitHub comments, and sort them in
+            # chronological order.  Check whether the Mantis issue is already noted as migrated to
+            # this repo, and if so, to which GitHub issue.
+            github_existing_issue = None
+            if hasattr(mantis_issue, 'attachments') and mantis_issue.attachments:
+                all_users = cx.mantis.get_users([mantis_issue.project.id])
+                for attachment in mantis_issue.attachments:
+                    attacher_user_id = getattr(attachment, 'user_id', None)
+                    attacher_ghc, attacher_ref, attacher_tag = None, None, None
+                    if attacher_user_id in all_users:
+                        attacher_ghc, attacher_ref, attacher_tag = cx.resolve_user(all_users[attacher_user_id])
+                    comment_body = []
+                    comment_body += ['At ', attachment.date_submitted.ctime()]
+                    if attacher_tag:
+                        comment_body += [' ', attacher_tag]
+                    comment_body += [' attached **[', attachment.filename or 'untitled', '](', attachment.download_url, ')**']
+                    if getattr(attachment, 'size', None):
+                        comment_body += [', ', str(attachment.size), ' bytes']
+                    if getattr(attachment, 'content_type', None):
+                        comment_body += [', *', attachment.content_type, '*']
+                    comment_body += ['.']
+                    comments.append((attachment.date_submitted, attacher_ghc or cx.github.default_connection(), ''.join(comment_body)))
+            migrated_github_issue_number = None
             if hasattr(mantis_issue, 'notes') and mantis_issue.notes:
                 for note in mantis_issue.notes:
-                    noter_ghc, noter_ref, noter_tag = cx.resolve_user(note.reporter)
-                    note_body = []
-                    note_body += ['At ', note.date_submitted.ctime()]
-                    if noter_tag:
-                        note_body += [' ', noter_tag, ' commented']
-                    note_body += [':']
-                    if hasattr(note, 'time_tracking') and note.time_tracking:
-                        hours = note.time_tracking / 60
-                        minutes = note.time_tracking % 60
-                        note_body += ['\n\nTime spent: **%u:%02u**' % (hours, minutes)]
+                    note_text = ''
                     if hasattr(note, 'text') and note.text:
-                        note_body += ['\n\n', mantis_text_to_markdown(note.text)]
-                    comments.append((noter_ghc or cx.github.default_connection(), ''.join(note_body)))
+                        note_text = note.text
+                    if note_text.startswith(MIGRATION_TEXT):
+                        try:
+                            org_name, repo_name, migrated_github_issue_number = cx.github.parse_issue_url(note_text[len(MIGRATION_TEXT):].split()[0])
+                        except (IndexError, ValueError):
+                            pass
+                    else:
+                        noter_ghc, noter_ref, noter_tag = cx.resolve_user(note.reporter)
+                        comment_body = []
+                        comment_body += ['At ', note.date_submitted.ctime()]
+                        if noter_tag:
+                            comment_body += [' ', noter_tag, ' commented']
+                        comment_body += [':']
+                        if hasattr(note, 'time_tracking') and note.time_tracking:
+                            hours = note.time_tracking / 60
+                            minutes = note.time_tracking % 60
+                            comment_body += ['\n\nTime spent: **%u:%02u**' % (hours, minutes)]
+                        if note_text:
+                            comment_body += ['\n\n', cx.mantis.text_to_markdown(note_text)]
+                        comments.append((note.date_submitted, noter_ghc or cx.github.default_connection(), ''.join(comment_body)))
             if resolution in ('open', 'reopened', 'suspended'):
                 pass
             else:
-                comments.append((creator_ghc,
+                comments.append((mantis_issue.last_updated, creator_ghc,
                         'Issue **closed** in Mantis at ' + mantis_issue.last_updated.ctime() +
                         (', Mantis resolution: **' + resolution + '**.' if resolution else '') +
                         '.'
                     ))
                 resolution = None
-                comments.append((creator_ghc, closemark))
+                comments.append((mantis_issue.last_updated, creator_ghc, closemark))
             migration_body = ['Issue migrated from Mantis to GitHub']
             if resolution:
                 migration_body += [' with Mantis resolution **', resolution, '**']
                 resolution = None
+            now = datetime.datetime.now()
             migration_body += [
-                    ' at ', datetime.datetime.now().ctime(),
+                    ' at ', now.ctime(),
                     ' using [', myname, '](', myurl, ') version ', myversion
                 ]
-            comments.append((cx.github.default_connection(), ''.join(migration_body)))
-            logging.debug('%s create_issue(title=%r body=%r labels=[%s])' % (
-                    creator_ghc.debugtag(repo=repo), title, body, ','.join(label.name for label in labels)))
+            comments.append((now, cx.github.default_connection(), ''.join(migration_body)))
+            # Create the issue on GitHub, unless it was already migrated to an existing issue, in
+            # which case overwrite that issue if --force was given.
             issue = None
             issue_number = None
-            if not cx.dry_run:
-                issue = repo.create_issue(title=title, body=body, labels=labels)
-                issue_number = issue.number
+            if migrated_github_issue_number:
+                logging.debug('%s get_issue(%r)' % (creator_ghc.debugtag(repo=repo), migrated_github_issue_number))
+                issue = repo.get_issue(migrated_github_issue_number)
+                # If this GitHub issue appears to be a migration of the original Mantis issue (its
+                # first comment contains a link back to the Mantis issue) then empty it out and
+                # return it to open state.  Otherwise, complain and create a new issue.
+                issue_comments = list(issue.get_comments())
+                if issue_comments and cx.mantis.issue_markdown(mantis_issue_id) in issue_comments[0].body:
+                    logging.warn('Mantis issue %s appears to already be migrated to GitHub %s/%s' % (
+                                mantis_issue_id, repo.name, issue.number
+                            ))
+                    if not cx.force:
+                        fatal('use --force to continue')
+                    logging.debug('%s edit(title="DELETED" body="" labels=[] state="open", milestone=None, assignee=None)' % (creator_ghc.debugtag(issue=issue),))
+                    if not cx.dry_run:
+                        issue.edit(title="DELETED", body="", labels=[], state='open', milestone=None, assignee=None)
+                    for comment in issue_comments:
+                        logging.debug('%s delete()' % (creator_ghc.debugtag(issue=issue, comment=comment),))
+                        if not cx.dry_run:
+                            comment.delete()
+                elif issue.title != 'DELETED':
+                    logging.warn('Mantis issue %s is marked as migrated to GitHub %s/%s, which does not agree -- creating new GitHub issue' % (
+                                mantis_issue_id, repo.name, issue.number
+                            ))
+                    if not cx.force:
+                        fatal('use --force to continue')
+                    issue = None
+                # We have an existing issue to overwrite, but if it was created by the wrong GitHub
+                # user and we have the correct authorised user now, then create a new user.
+                if issue and authentic_creator_ghc and issue.user.id == authentic_creator_ghc.root().get_user().id:
+                    logging.debug('%s edit(title=%r body=%r labels=[%s])' % (
+                            creator_ghc.debugtag(issue=issue), title, body, ','.join(label.name for label in labels)))
+                    if not cx.dry_run:
+                        issue.edit(title=title, body=body, labels=[label.name for label in labels])
+                    issue_number = issue.number
+                else:
+                    issue = None
+            if issue is None:
+                logging.debug('%s create_issue(title=%r body=%r labels=[%s])' % (
+                        creator_ghc.debugtag(repo=repo), title, body, ','.join(label.name for label in labels)))
+                if not cx.dry_run:
+                    issue = repo.create_issue(title=title, body=body, labels=labels)
+                    issue_number = issue.number
+            # Mark the Mantis issue as migrated.
+            if not cx.testing:
+                text = MIGRATION_TEXT + ' ' + (issue.html_url if issue else '<URL unknown>')
+                logging.debug('Mantis add_note(%r, %r)' % (mantis_issue_id, text,))
+                if not cx.dry_run:
+                    cx.mantis.add_note(mantis_issue_id, text)
             if github_milestone is not None:
                 logging.debug('%s edit(milestone=%r)' % (creator_ghc.debugtag(issue=issue), github_milestone.title))
                 if not cx.dry_run:
@@ -355,8 +462,11 @@ def main():
                     issue.edit(assignee=github_assignee)
                     if getattr(issue.assignee, 'login', None) != github_assignee.login:
                         logging.warn('cannot assign issue to %r -- adding GitHub comment instead' % (github_assignee.login,))
-                        comments.insert(1, (cx.github.default_connection(), 'Assigned to Mantis user ' + cx.mantis.user_markdown(mantis_issue.handler) + '.'))
-            for commenter_ghc, comment_body in comments:
+                        comments.insert(1, (mantis_issue.date_submitted, cx.github.default_connection(),
+                                'Assigned to Mantis user ' + cx.mantis.user_markdown(mantis_issue.handler) + '.'
+                            ))
+            comments.sort(key=lambda c: c[0])
+            for commenter_time, commenter_ghc, comment_body in comments:
                 commenter_repo = commenter_ghc.repo(repo_name)
                 if comment_body is closemark:
                     logging.debug('%s edit(state="closed")' % (commenter_ghc.debugtag(repo=commenter_repo),))
@@ -371,18 +481,17 @@ def main():
                     logging.debug('%s issue=%r create_comment(%r)' % (commenter_ghc.debugtag(repo=commenter_repo), issue_number, comment_body))
                     if not cx.dry_run:
                         commenter_issue.create_comment(comment_body)
-            # TODO: handle attachments (import as Gists?)
             # TODO: handle relationships (links between issues)
             #   - command to build map
             #   - cache map locally
             #   - command to edit comments referring to imported Mantis issues,
             #     to refer to GitHub issues instead
     except IOError, e:
-        if cx.debug:
+        if cx.mantis.debug:
             traceback.print_exc()
         fatal('%s: %s' % (cx.mantis.url or '<Unknown URL>', e))
     except github.GithubException, e:
-        if cx.debug:
+        if cx.github.debug:
             traceback.print_exc()
         fatal(e.data.get('message', 'Unknown error'))
 
@@ -394,6 +503,8 @@ def serval_tools_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 
 class MantisInterface(object):
+
+    debug = False
     url = None
     user = None
     password = None
@@ -430,6 +541,15 @@ class MantisInterface(object):
     def url_soap(self):
         return self.url_base() + '/api/soap/mantisconnect.php?wsdl'
 
+    def url_issue(self, issue_number):
+        return self.url_base() + '/view.php?id=' + str(issue_number)
+
+    def issue_markdown(self, issue_number):
+        return '[mantis:' + '%07u' % issue_number + '](' + self.url_issue(issue_number) + ')'
+
+    def re_issue_markdown(self, match):
+        return self.issue_markdown(int(match.group(1)))
+
     def client(self):
         if not self._client:
             import suds
@@ -447,6 +567,22 @@ class MantisInterface(object):
         # by spammers.
         return '**[' + user.name + '](' + mantis_user_url + ')**'
 
+    def text_to_markdown(self, text):
+        # Remove leading blank lines.
+        text = re.sub(r'^( *\n)+', '', text)
+        # If it looks like a stack trace or log file, then preformat it.  Otherwise, remove
+        # unintended Markdown effects.
+        if (    len(re.findall(r'\bat .*\(.*\.java:[0-9]+\)', text)) > 3
+            or  len(re.findall(r'^ *(DEBUG|WARN|INFO|ERROR):', text, flags=re.MULTILINE)) > 3
+            or  len(re.findall(r'^ *[EWIDV]/', text, flags=re.MULTILINE)) > 3
+            ):
+            text = '```\n' + text + '\n```'
+        else:
+            text = re.subn(r'^ {4,}', '   ', text, flags=re.MULTILINE)[0]
+            # Convert Mantis issue references into links to Mantis.
+            text = re.subn(r'#(\d+)', self.re_issue_markdown, text)[0]
+        return text
+
     def service(self, method, **kwargs):
         '''This method exists to create a single code path to invoking SOAP services, that can be
         logged.
@@ -460,7 +596,7 @@ class MantisInterface(object):
             logging.debug('%s(%s)' % (method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems())))
             return getattr(client.service, method)(**kwargs)
         except suds.WebFault, e:
-            if cx.debug:
+            if self.debug:
                 traceback.print_exc()
             fatal(e)
 
@@ -475,6 +611,19 @@ class MantisInterface(object):
         if self.password is None:
             fatal("missing Mantis password")
         return {'username': self.user, 'password': self.password}
+
+    def get_users(self, project_ids=None, **kwopts):
+        if not project_ids:
+            project_ids = []
+            projects = self.service_cred('mc_projects_get_user_accessible', **kwopts)
+            for project in projects:
+                project_ids.append(project.id)
+        all_users = {}
+        for project_id in project_ids:
+            users = self.service_cred('mc_project_get_users', project_id=project_id, access=1, **kwopts)
+            for user in users:
+                all_users[user.id] = user
+        return all_users
 
     def get_issues(self, project_ids=None, per_page=100, **kwopts):
         if not project_ids:
@@ -493,7 +642,13 @@ class MantisInterface(object):
                 page += 1
         return all_issues
 
+    def add_note(self, mantis_issue_id, note_text):
+        note = self.client().factory.create('IssueNoteData')
+        note.text = note_text
+        return self.service_cred('mc_issue_note_add', issue_id=mantis_issue_id, note=note)
+
 class GithubInterface(object):
+    debug = False
     login = None
     password = None
     user_tokens = ()
@@ -542,6 +697,24 @@ class GithubInterface(object):
     def default_connection(self):
         return self.connection(self.login)
 
+    def parse_issue_url(self, text):
+        if text.startswith('https://'):
+            text = text[8:]
+        elif text.startswith('http://'):
+            text = text[7:]
+        else:
+            return None
+        if text.startswith('api.github.com/repos/'):
+            text = text[21:]
+        elif text.startswith('github.com/'):
+            text = text[11:]
+        else:
+            return None
+        a = text.split('/')
+        if len(a) == 4 and len(a[0]) and len(a[1]) and a[2] == 'issues' and a[3].isdigit():
+            return a[0], a[1], int(a[3])
+        return None
+
 class GithubConnection(object):
     login = None
     password = None
@@ -551,7 +724,7 @@ class GithubConnection(object):
     _org = None
     _repos = None
 
-    def debugtag(self, org=None, repo=None, issue=None):
+    def debugtag(self, org=None, repo=None, issue=None, comment=None):
         if issue:
             repo = issue.repository
         if repo:
@@ -563,6 +736,8 @@ class GithubConnection(object):
             r += ['repo=%r' % repo.name]
         if issue:
             r += ['issue=%r' % issue.number]
+        if comment:
+            r += ['comment=%r' % comment.id]
         return ' '.join(r)
 
     def root(self):
@@ -701,21 +876,7 @@ def github_user_str(user):
     return ' '.join(r)
 
 def github_milestone_str(milestone):
-    return '%s (%s) %s' % (milestone.number, milestone.due_on, milestone.title) if milestone else 'None'
-
-def mantis_text_to_markdown(text):
-    # Remove leading blank lines.
-    text = re.sub(r'^( *\n)+', '', text)
-    # If it looks like a stack trace or log file, then preformat it.  Otherwise, remove
-    # unintended Markdown effects.
-    if (    len(re.findall(r'\bat .*\(.*\.java:[0-9]+\)', text)) > 3
-        or  len(re.findall(r'^ *(DEBUG|WARN|INFO|ERROR):', text, flags=re.MULTILINE)) > 3
-        or  len(re.findall(r'^ *[EWIDV]/', text, flags=re.MULTILINE)) > 3
-        ):
-        text = '```\n' + text + '\n```'
-    else:
-        text = re.subn(r'^ {4,}', '   ', text, flags=re.MULTILINE)[0]
-    return text
+    return '%s (%s) %s' % (milestone.number, milestone.due_on, milestone.title) if milestone else repr(milestone)
 
 def parse_mantis_xml(f):
     '''This is left-over code from an early attempt to parse the XML exported by Mantis.
