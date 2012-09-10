@@ -15,6 +15,8 @@
     sp-mantis2github [options] github list repos
     sp-mantis2github [options] github list issues <repo-name>
     sp-mantis2github [options] github dump issue <repo-name> <issue-number>
+    sp-mantis2github [options] github unset milestone <repo-name> <issue-number>
+    sp-mantis2github [options] github unset assignee <repo-name> <issue-number>
     sp-mantis2github [options] migrate <issue-id> <repo-name>
     sp-mantis2github -h | --help
     sp-mantis2github --version
@@ -40,7 +42,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.6'
+myversion = '0.7'
 myorg = 'servalproject'
 myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
 
@@ -211,6 +213,23 @@ def main():
                 repo = cx.github.default_connection().repo(repo_name)
                 logging.debug('%s get_issue(%r)' % (cx.github.default_connection().debugtag(repo=repo), issue_number))
                 github_dump_issue(repo.get_issue(issue_number))
+            elif cx.opts['unset']:
+                repo_name = cx.opts['<repo-name>']
+                try:
+                    issue_number = int(cx.opts['<issue-number>'])
+                except ValueError:
+                    fatal('invalid <issue-number>')
+                repo = cx.github.default_connection().repo(repo_name)
+                logging.debug('%s get_issue(%r)' % (cx.github.default_connection().debugtag(repo=repo), issue_number))
+                issue = repo.get_issue(issue_number)
+                if cx.opts['milestone']:
+                    logging.debug('%s edit(milestone=None)' % (cx.github.default_connection().debugtag(repo=repo, issue=issue)))
+                    if not cx.dry_run:
+                        issue.edit(milestone=None)
+                if cx.opts['assignee']:
+                    logging.debug('%s edit(assignee=None)' % (cx.github.default_connection().debugtag(repo=repo, issue=issue)))
+                    if not cx.dry_run:
+                        issue.edit(assignee=None)
         elif cx.opts['migrate']:
             try:
                 mantis_issue_id = int(cx.opts['<issue-id>'])
