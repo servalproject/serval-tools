@@ -3,4 +3,4 @@
 	url = git://github.com/halst/docopt.git
 [submodule "python/PyGithub"]
 	path = python/PyGithub
-	url = git://github.com/jacquev6/PyGithub.git
+	url = git://github.com/servalproject/PyGithub.git
