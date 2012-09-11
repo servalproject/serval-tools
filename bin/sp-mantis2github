@@ -51,7 +51,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.9'
+myversion = '0.91'
 myorg = 'servalproject'
 myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
 
@@ -266,7 +266,7 @@ def main():
             # Resolve the Mantis reporter to a GitHub user.
             authentic_creator_ghc, creator_ref = cx.resolve_user(mantis_issue.reporter)
             if authentic_creator_ghc is None:
-                logging.warn('Mantis issue was reported by %s, no equivalent authorised GitHub user' % (mantis_issue.reporter.name,))
+                logging.warn('Mantis issue %s was reported by %s, no equivalent authorised GitHub user' % (mantis_issue_id, mantis_issue.reporter.name,))
                 if not cx.behalf:
                     fatal('use --behalf option to migrate issue as GitHub user %s' % (cx.github.default_connection().login,))
                 creator_ghc = cx.github.default_connection()
@@ -448,7 +448,6 @@ def main():
             # Convert Mantis attachments and notes into GitHub comments, and sort them in
             # chronological order.  Check whether the Mantis issue is already noted as migrated to
             # this repo, and if so, to which GitHub issue.
-            github_existing_issue = None
             if hasattr(mantis_issue, 'attachments') and mantis_issue.attachments:
                 all_users = cx.mantis.get_users([mantis_issue.project.id])
                 for attachment in mantis_issue.attachments:
@@ -539,14 +538,14 @@ def main():
                 deleted_issue = delete_issue
             if overwrite_issue is None:
                 logging.debug('%s create_issue(title=%r body=%r labels=[%s])' % (
-                        creator_ghc.debugtag(repo=repo), title, body, ','.join(label.name for label in labels)))
+                        creator_ghc.debugtag(repo=repo), title, body, ','.join(getattr(label, 'name', 'None') for label in labels)))
                 if not cx.dry_run:
                     issue = repo.create_issue(title=title, body=body, labels=labels)
                     target_github_ref.issue_number = issue.number
             else:
                 issue = overwrite_issue
                 logging.debug('%s edit(state="open", title=%r, body=%r, labels=[%s])' % (
-                        creator_ghc.debugtag(issue=issue), title, body, ','.join(label.name for label in labels)))
+                        creator_ghc.debugtag(issue=issue), title, body, ','.join(getattr(label, 'name', 'None') for label in labels)))
                 if not cx.dry_run:
                     issue.edit(state='open', title=title, body=body, labels=[label.name for label in labels])
             # Set the GitHub milestone.
