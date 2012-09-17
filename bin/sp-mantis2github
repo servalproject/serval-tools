@@ -19,6 +19,7 @@
     sp-mantis2github [options] github dump issue <repo-name> <issue-number>
     sp-mantis2github [options] github unset milestone <repo-name> <issue-number>
     sp-mantis2github [options] github unset assignee <repo-name> <issue-number>
+    sp-mantis2github [options] github create issue <repo-name> <title> <body>
     sp-mantis2github [options] migrate <issue-id> <repo-name> [<github-issue-number>]
     sp-mantis2github -h | --help
     sp-mantis2github --version
@@ -26,6 +27,8 @@ Options:
     -h --help               Show this message
     --version               Show version and exit
     -D --debug              Enable debug logging
+    --mantis-debug          Enable debug logging of raw Mantis SOAP requests
+    --github-debug          Enable debug logging of raw GitHub HTTP requests
     -n --dry-run            Do not write to GitHub, do queries only
     -t --testing            When migrating, do not modify the original Mantis issue; normally
                             a note is added to the issue linking to its GitHub successor, and
@@ -51,7 +54,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.91'
+myversion = '0.92'
 myorg = 'servalproject'
 myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
 
@@ -79,7 +82,9 @@ def main():
     cx.read_config_file(os.path.expanduser(os.path.expandvars(cx.opts['--config'])))
     if cx.opts['--debug']:
         cx.debug = True
+    if cx.opts['--mantis-debug']:
         cx.mantis.debug = True
+    if cx.opts['--github-debug']:
         cx.github.debug = True
     cx.dry_run = cx.opts['--dry-run']
     cx.testing = cx.opts['--testing']
@@ -92,8 +97,12 @@ def main():
     cx.github.password = cx.opts['--github-password'] or cx.github.password
     if cx.debug:
         logging.getLogger().setLevel(logging.DEBUG)
-    if cx.mantis.debug:
         logging.getLogger('suds').setLevel(logging.INFO)
+        logging.getLogger('github').setLevel(logging.INFO)
+    if cx.mantis.debug:
+        logging.getLogger('suds').setLevel(logging.DEBUG)
+    if cx.github.debug:
+        logging.getLogger('github').setLevel(logging.DEBUG)
     try:
         if cx.opts['mantis']:
             if cx.opts['wsdl']:
@@ -227,6 +236,18 @@ def main():
                 repo = cx.github.default_connection().repo(repo_name)
                 logging.debug('%s get_issue(%r)' % (cx.github.default_connection().debugtag(repo=repo), issue_number))
                 github_dump_issue(repo.get_issue(issue_number))
+            elif cx.opts['create'] and cx.opts['issue']:
+                repo_name = cx.opts['<repo-name>']
+                title = cx.opts['<title>']
+                body = cx.opts['<body>']
+                ghc = cx.github.default_connection()
+                repo = ghc.repo(repo_name)
+                labels = []
+                logging.debug('%s create_issue(title=%r, body=%r, labels=[%s])' % (
+                        ghc.debugtag(repo=repo), title, body, ','.join(getattr(label, 'name', 'None') for label in labels)))
+                if not cx.dry_run:
+                    issue = repo.create_issue(title=title, body=body, labels=labels)
+                    github_dump_issue(issue)
             elif cx.opts['unset']:
                 repo_name = cx.opts['<repo-name>']
                 try:
@@ -537,7 +558,7 @@ def main():
                         comment.delete()
                 deleted_issue = delete_issue
             if overwrite_issue is None:
-                logging.debug('%s create_issue(title=%r body=%r labels=[%s])' % (
+                logging.debug('%s create_issue(title=%r, body=%r, labels=[%s])' % (
                         creator_ghc.debugtag(repo=repo), title, body, ','.join(getattr(label, 'name', 'None') for label in labels)))
                 if not cx.dry_run:
                     issue = repo.create_issue(title=title, body=body, labels=labels)
@@ -609,13 +630,13 @@ def main():
         #   - description and comment texts that link to an imported Mantis issue should be
         #     edited to refer to the GitHub issue instead
     except IOError, e:
-        if cx.mantis.debug:
+        if cx.debug:
             traceback.print_exc()
         fatal('%s: %s' % (cx.mantis.url or '<Unknown URL>', e))
     except github.GithubException, e:
-        if cx.github.debug:
+        if cx.debug:
             traceback.print_exc()
-        fatal(e.data.get('message', 'Unknown error'))
+        fatal(u'GitHub error: %s' % (e,))
 
 def fatal(message):
     logging.critical(message)
@@ -1054,6 +1075,10 @@ class Context(object):
             ):
             text = '```\n' + text + '\n```'
         else:
+            # Remove trailing newlines and blank lines.
+            text = text.rstrip()
+            # Reduce indents or four or more spaces to three spaces, to avoid
+            # them being formatted as code.
             text = re.subn(r'^ {4,}', '   ', text, flags=re.MULTILINE)[0]
             # Convert Mantis issue references (#N) into links to Mantis or to a GitHub issue
             # reference (#M, org/repo#M) if the Mantis issue appears to have been migrated.
