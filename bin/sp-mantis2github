@@ -54,7 +54,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.92'
+myversion = '0.93'
 myorg = 'servalproject'
 myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
 
@@ -1069,10 +1069,21 @@ class Context(object):
         text = re.sub(r'^( *\n)+', '', text)
         # If it looks like a stack trace or log file, then preformat it.  Otherwise, remove
         # unintended Markdown effects.
-        if (    len(re.findall(r'\bat .*\(.*\.java:[0-9]+\)', text)) > 3
-            or  len(re.findall(r'^ *(DEBUG|WARN|INFO|ERROR):', text, flags=re.MULTILINE)) > 3
-            or  len(re.findall(r'^ *[EWIDV]/', text, flags=re.MULTILINE)) > 3
+        if (    len(re.findall(r'\bat .*\(.*\.java:[0-9]+\)', text)) >= 3
+            or  len(re.findall(r'^ *(DEBUG|WARN|INFO|ERROR):', text, flags=re.MULTILINE)) >= 3
+            or  len(re.findall(r'^ *[EWIDV]/', text, flags=re.MULTILINE)) >= 3
             ):
+            # WARNING for bug in GitHub API.
+            percents = re.findall(r'%(?![0-9A-Fa-f]{2})', text)
+            if percents:
+                logging.warn(
+r'''Preformat text contains %u occurence%s of '%%' character not
+followed by two hex digits, which would cause api.github.com to return a
+500 Server Error, so every occurrence is replaced with &#37;.  You will
+need to manually edit the text to revert these to '%%' characters.
+See https://github.com/jacquev6/PyGithub/issues/87''' %
+                        (len(percents), 's' if len(percents) != 1 else '')
+                    )
             text = '```\n' + text + '\n```'
         else:
             # Remove trailing newlines and blank lines.
@@ -1091,6 +1102,9 @@ class Context(object):
                         return '#%u' % issuenum
                     return '%s/%s#%u' % (org, repo, issuenum)
                 text = re.subn(r'\bhttps?://github.com/([^\s/]+)/([^\s/]+)/issues/(\d+)\b', replace_link, text)[0]
+        # WORKAROUND for bug in GitHub API: replace percent signs that are not followed by two hex
+        # digits with HTML escape.
+        text = re.subn(r'%(?![0-9A-Fa-f]{2})', '&#37;', text)[0]
         return text
 
     def filter_mantis_issues(self, mantis_issues):
