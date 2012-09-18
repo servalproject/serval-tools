@@ -12,6 +12,7 @@
     sp-mantis2github [options] mantis dump project <project-id>
     sp-mantis2github [options] mantis dump issue <issue-id>
     sp-mantis2github [options] mantis add note <issue-id> <text>
+    sp-mantis2github [options] mantis map build|update
     sp-mantis2github [options] github register
     sp-mantis2github [options] github list users
     sp-mantis2github [options] github list repos
@@ -39,6 +40,7 @@ Options:
                             Mantis issue or any comment is by a user who cannot be mapped to
                             an authorised GitHub user
     --config=PATH           Read config file [default: $HOME/.mantis2github]
+    --mapfile=PATH          Use this as the issue map file
     --mantis-url=URL        Connect to Mantis SOAP service at this URL (default taken from
                             $SERVAL_MANTIS_URL/api/soap/mantisconnect.php if set, or config file)
     --mantis-user=USER      Connect to Mantis with this user name (overrides config file)
@@ -54,7 +56,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.93'
+myversion = '0.94'
 myorg = 'servalproject'
 myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
 
@@ -78,14 +80,16 @@ def main():
     cx = Context()
     cx.opts = docopt.docopt(__doc__, version=myversion)
     #print cx.opts
+    cx.config_path = os.path.expanduser(os.path.expandvars(cx.opts['--config']))
     cx.mantis.url = os.environ.get('SERVAL_MANTIS_URL')
-    cx.read_config_file(os.path.expanduser(os.path.expandvars(cx.opts['--config'])))
+    cx.read_config_file()
     if cx.opts['--debug']:
         cx.debug = True
     if cx.opts['--mantis-debug']:
         cx.mantis.debug = True
     if cx.opts['--github-debug']:
         cx.github.debug = True
+    cx.map_path = cx.opts['--mapfile'] or cx.map_path
     cx.dry_run = cx.opts['--dry-run']
     cx.testing = cx.opts['--testing']
     cx.force = cx.opts['--force']
@@ -93,6 +97,8 @@ def main():
     cx.mantis.url = cx.opts['--mantis-url'] or cx.mantis.url
     cx.mantis.user = cx.opts['--mantis-user'] or cx.mantis.user
     cx.mantis.password = cx.opts['--mantis-password'] or cx.mantis.password
+    cx.mantis.include_open = cx.opts['--open']
+    cx.mantis.include_closed = cx.opts['--closed']
     cx.github.login = cx.opts['--github-login'] or cx.github.login
     cx.github.password = cx.opts['--github-password'] or cx.github.password
     if cx.debug:
@@ -142,7 +148,7 @@ def main():
                     if values != ('', '', ''):
                         print '%-20s %-30s %s' % values
             elif cx.opts['list'] and cx.opts['issue'] and cx.opts['users']:
-                all_issues = list(cx.filter_mantis_issues(cx.mantis.get_issues().values()))
+                all_issues = cx.mantis.get_issues().values()
                 users = {}
                 for issue in all_issues:
                     try:
@@ -172,7 +178,7 @@ def main():
                         project_ids.append(int(cx.opts['<project-id>']))
                     except ValueError:
                         fatal('invalid <project-id>')
-                all_issues = list(cx.filter_mantis_issues(cx.mantis.get_issues(project_ids).values()))
+                all_issues = cx.mantis.get_issues(project_ids).values()
                 all_issues.sort(key=lambda p: p.id)
                 for issue in all_issues:
                     flags = [' '] * 2
@@ -190,6 +196,29 @@ def main():
                 logging.debug('Mantis add_note(%r, %r)' % (mantis_issue_id, text))
                 if not cx.dry_run:
                     cx.mantis.add_note(mantis_issue_id, text)
+            elif cx.opts['map']:
+                if not cx.map_path:
+                    fatal("map file not configured -- add to %s or give --mapfile option" % (cx.config_path,))
+                mf = open(cx.map_path, 'w+')
+                mp = ConfigParser.SafeConfigParser()
+                mp.optionxform = str
+                try:
+                    if cx.opts['update']:
+                        mp.readfp(mf)
+                        if mp.has_section('mantis issue map'):
+                            for key, value in mp.items('mantis issue map'):
+                                mantis_id = int(key)
+                                issue_map[mantis_id] = GithubIssueRef.fromstr(value)
+                            mp.remove_section('mantis issue map')
+                    issue_map = cx.mantis.issue_map()
+                    mp.add_section('mantis issue map')
+                    for mantis_id, github_ref in issue_map.iteritems():
+                        mp.set('mantis issue map', str(mantis_id), str(github_ref))
+                    mf.seek(0)
+                    mf.truncate()
+                    mp.write(mf)
+                finally:
+                    mf.close()
         elif cx.opts['github']:
             if cx.opts['register']:
                 root = cx.github.main().root()
@@ -651,28 +680,31 @@ class MantisInterface(object):
     url = None
     user = None
     password = None
+    include_open = False
+    include_closed = False
     _client = None
 
     _enum = None
     _projects = None
-    _issues = None
+    _open_issues = None
+    _closed_issues = None
     _issue_map = None
 
     def read_config(self, cp):
         try:
-            self.url = cp.get('mantis', 'url', os.environ)
+            self.url = cp.get('mantis', 'url', False, os.environ)
         except ConfigParser.NoSectionError:
             pass
         except ConfigParser.NoOptionError:
             pass
         try:
-            self.user = cp.get('mantis', 'user', os.environ)
+            self.user = cp.get('mantis', 'user', False, os.environ)
         except ConfigParser.NoSectionError:
             pass
         except ConfigParser.NoOptionError:
             pass
         try:
-            self.password = cp.get('mantis', 'password', os.environ)
+            self.password = cp.get('mantis', 'password', False, os.environ)
         except ConfigParser.NoSectionError:
             pass
         except ConfigParser.NoOptionError:
@@ -712,7 +744,7 @@ class MantisInterface(object):
         # by spammers.
         return '**[' + user.name + '](' + mantis_user_url + ')**'
 
-    def service(self, method, **kwargs):
+    def service(self, method, exception_fatal=True, **kwargs):
         '''This method exists to create a single code path to invoking SOAP services, that can be
         logged.
         '''
@@ -728,6 +760,8 @@ class MantisInterface(object):
             if self.debug:
                 print >>sys.stderr, '%s(%s)' % (method, ', '.join('%s=%r' % i for i in kwargs.iteritems()))
                 traceback.print_exc()
+            if not exception_fatal:
+                raise
             fatal(e)
 
     def service_cred(self, method, **kwargs):
@@ -789,25 +823,57 @@ class MantisInterface(object):
             self._issues[issue_id] = self.service_cred('mc_issue_get', issue_id=issue_id)
         return self._issues[issue_id]
 
-    def get_issues(self, project_ids=None, per_page=100, **kwopts):
-        if not project_ids:
-            project_ids = self.get_projects(**kwopts).keys()
-        all_issues = {}
-        if self._issues is None:
-            self._issues = {}
-        for project_id in project_ids:
-            if project_id not in self._issues:
-                self._issues[project_id] = {}
-                page = 1
-                while True:
-                    issues = self.service_cred('mc_project_get_issues', project_id=project_id, page_number=page, per_page=per_page, **kwopts)
-                    for issue in issues:
-                        self._issues[project_id][issue.id] = issue
-                    if len(issues) < per_page:
-                        break
-                    page += 1
-            all_issues.update(self._issues[project_id])
-        return all_issues
+    def get_open_issues(self, project_ids=None, per_page=100, **kwopts):
+        if self._open_issues is None:
+            self._open_issues = {}
+            if not project_ids:
+                project_ids = self.get_projects(**kwopts).keys()
+            for project_id in project_ids:
+                if project_id not in self._open_issues:
+                    self._open_issues[project_id] = {}
+                    page = 1
+                    while True:
+                        issues = self.service_cred('mc_project_get_issues', project_id=project_id, page_number=page, per_page=per_page, **kwopts)
+                        for issue in issues:
+                            self._open_issues[project_id][issue.id] = issue
+                        if len(issues) < per_page:
+                            break
+                        page += 1
+        ret = dict()
+        for project_id in project_ids or self._open_issues.keys():
+            ret.update(self._open_issues[project_id])
+        return ret
+
+    def get_closed_issues(self, project_ids=None, **kwopts):
+        if self._closed_issues is None:
+            self._closed_issues = {}
+            if not project_ids:
+                project_ids = self.get_projects(**kwopts).keys()
+            import suds
+            max_id = 0
+            for project_id in project_ids:
+                max_id = max(max_id, self.service_cred('mc_issue_get_biggest_id', project_id=project_id, **kwopts))
+            open_issues = self.get_open_issues(project_ids, **kwopts)
+            for id in xrange(1, max_id + 1):
+                if id not in open_issues:
+                    try:
+                        issue = self.service_cred('mc_issue_get', issue_id=id, exception_fatal=False, **kwopts)
+                        self._closed_issues[issue.id] = issue
+                    except suds.WebFault, e:
+                        pass
+        ret = dict()
+        for issue_id, issue in self._closed_issues.iteritems():
+            if project_ids is None or issue.project.id in project_ids:
+                ret[issue_id] = issue
+        return ret
+
+    def get_issues(self, project_ids=None, **kwopts):
+        ret = dict()
+        if self.include_open or not self.include_closed:
+            ret.update(self.get_open_issues(project_ids, **kwopts))
+        if self.include_closed or not self.include_open:
+            ret.update(self.get_closed_issues(project_ids, **kwopts))
+        return ret
 
     MIGRATION_TEXT = 'This issue is now being tracked on GitHub: '
 
@@ -823,7 +889,7 @@ class MantisInterface(object):
                 except (IndexError, ValueError):
                     pass
             return None
-        elif note:
+        elif note is not None:
             return self.migrated_github_reference(text= note.text if hasattr(note, 'text') and note.text else '')
         elif hasattr(issue, 'notes') and issue.notes:
             ref = None
@@ -835,7 +901,7 @@ class MantisInterface(object):
     def issue_map(self, **kwopts):
         if self._issue_map is None:
             self._issue_map = {}
-            for issue_id, issue in self.get_issues():
+            for issue_id, issue in self.get_issues().iteritems():
                 ref = self.migrated_github_reference(issue=issue)
                 if ref:
                     self._issue_map[issue_id] = ref
@@ -878,6 +944,23 @@ class GithubIssueRef(object):
     def __str__(self):
         return '%s/%s#%u' % (self.org_name, self.repo_name, self.issue_number)
 
+    @classmethod
+    def fromstr(cls, text, relative_issue=None):
+        obj = cls()
+        m = re.match(r'(?:([^/]+)/(^[/#]+))?#(\d+)$', text)
+        if not m:
+            raise ValueError(text)
+        if m.group(1) and m.group(2):
+            obj.org_name = m.group(1)
+            obj.repo_name = m.group(2)
+        elif relative_issue and relative_issue.org_name and relative_issue.repo_name:
+            obj.org_name = relative_issue.org_name
+            obj.repo_name = relative_issue.repo_name
+        else:
+            raise ValueError(text)
+        obj.issue_number = int(m.group(3))
+        return obj
+
 class GithubInterface(object):
     debug = False
     login = None
@@ -888,13 +971,13 @@ class GithubInterface(object):
 
     def read_config(self, cp):
         try:
-            self.login = cp.get('github', 'login', os.environ)
+            self.login = cp.get('github', 'login', False, os.environ)
         except ConfigParser.NoSectionError:
             pass
         except ConfigParser.NoOptionError:
             pass
         try:
-            self.password = cp.get('github', 'password', os.environ)
+            self.password = cp.get('github', 'password', False, os.environ)
         except ConfigParser.NoSectionError:
             pass
         except ConfigParser.NoOptionError:
@@ -902,7 +985,7 @@ class GithubInterface(object):
         self.user_tokens = {}
         try:
             for key, value in cp.items('github users'):
-                self.user_tokens[key] = cp.get('github users', key, os.environ)
+                self.user_tokens[key] = cp.get('github users', key, False, os.environ)
         except ConfigParser.NoSectionError:
             pass
 
@@ -1006,6 +1089,7 @@ class GithubConnection(object):
         return self._repos[name]
 
 class Context(object):
+    map_path = None
     debug = False
     dry_run = False
     opts = None
@@ -1013,7 +1097,8 @@ class Context(object):
     github = GithubInterface()
     user_map = ()
 
-    def read_config_file(self, path):
+    def read_config_file(self):
+        path = self.config_path
         if os.path.exists(path):
             stat = os.stat(path)
             if stat.st_uid != os.getuid():
@@ -1024,12 +1109,18 @@ class Context(object):
                 cp = ConfigParser.SafeConfigParser()
                 cp.optionxform = str
                 cp.readfp(file(path))
+                try:
+                    self.map_path = cp.get('mantis2github', 'mapfile', False, os.environ)
+                except ConfigParser.NoSectionError:
+                    pass
+                except ConfigParser.NoOptionError:
+                    pass
                 self.mantis.read_config(cp)
                 self.github.read_config(cp)
                 self.user_map = {}
                 try:
                     for key, value in cp.items('user map'):
-                        self.user_map[key] = cp.get('user map', key, os.environ)
+                        self.user_map[key] = cp.get('user map', key, False, os.environ)
                 except ConfigParser.NoSectionError:
                     pass
 
@@ -1106,16 +1197,6 @@ See https://github.com/jacquev6/PyGithub/issues/87''' %
         # digits with HTML escape.
         text = re.subn(r'%(?![0-9A-Fa-f]{2})', '&#37;', text)[0]
         return text
-
-    def filter_mantis_issues(self, mantis_issues):
-        statuses = []
-        if self.opts['--open']:
-            statuses += ['new', 'assigned', 'acknowledged', 'confirmed', 'feedback']
-        if self.opts['--closed']:
-            statuses += ['resolved', 'closed']
-        for issue in mantis_issues:
-            if not statuses or issue.status.name in statuses:
-                yield issue
 
 def mantis_user_str(user):
     if not user:
