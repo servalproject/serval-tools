@@ -67,6 +67,7 @@ Options:
     --mantis-password=PASS  Connect to Mantis with this password (overrides config file)
     --github-login=USER     Connect to GitHub with this user name (overrides config file)
     --github-password=PASS  Connect to GitHub with this password (overrides config file)
+    --github-org=NAME       Use repositories in this GitHub organisation (overrides config file)
     -C --closed             When listing issues or users of issues, only include closed issues;
                             When migrating, close GitHub issue after migration is done
     -O --open               When listing issues, only include open issues
@@ -76,9 +77,8 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.95'
-myorg = 'servalproject'
-myurl = 'https://github.com/' + myorg + '/serval-tools/blob/master/bin/' + myname
+myversion = '0.96'
+myurl = 'https://github.com/servalproject/serval-tools/blob/master/bin/' + myname
 
 import sys
 import traceback
@@ -104,11 +104,11 @@ def main():
     cx.mantis.url = os.environ.get('SERVAL_MANTIS_URL')
     cx.read_config_file()
     if cx.opts['--debug']:
-        cx.debug = True
+        cx.debug_enabled = True
     if cx.opts['--mantis-debug']:
-        cx.mantis.debug = True
+        cx.mantis.debug_enabled = True
     if cx.opts['--github-debug']:
-        cx.github.debug = True
+        cx.github.debug_enabled = True
     cx.map_path = cx.opts['--mapfile'] or cx.map_path
     cx.dry_run = cx.opts['--dry-run']
     cx.testing = cx.opts['--testing']
@@ -121,13 +121,14 @@ def main():
     cx.mantis.include_closed = cx.opts['--closed']
     cx.github.login = cx.opts['--github-login'] or cx.github.login
     cx.github.password = cx.opts['--github-password'] or cx.github.password
-    if cx.debug:
+    cx.github.default_org_name = cx.opts['--github-org'] or cx.github.default_org_name
+    if cx.debug_enabled:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.getLogger('suds').setLevel(logging.INFO)
         logging.getLogger('github').setLevel(logging.INFO)
-    if cx.mantis.debug:
+    if cx.mantis.debug_enabled:
         logging.getLogger('suds').setLevel(logging.DEBUG)
-    if cx.github.debug:
+    if cx.github.debug_enabled:
         logging.getLogger('github').setLevel(logging.DEBUG)
     try:
         if cx.opts['mantis']:
@@ -213,7 +214,7 @@ def main():
                 except ValueError:
                     fatal('invalid <issue-id>')
                 text = cx.opts['<text>']
-                logging.debug('Mantis add_note(%r, %r)' % (mantis_issue_id, text))
+                cx.mantis.debug('add_note(%r, %r)', mantis_issue_id, text)
                 if not cx.dry_run:
                     cx.mantis.add_note(mantis_issue_id, text)
             elif cx.opts['map']:
@@ -251,39 +252,39 @@ def main():
             if cx.opts['register']:
                 ghc = cx.github.main()
                 ghc.open()
-                logging.debug('%s get_user()' % (ghc.debugtag(),))
+                ghc.debug('get_user()')
                 ghuser = ghc.open().get_user()
                 scopes = ['public_repo']
                 note = myname + ' version ' + myversion
-                logging.debug('%s create_authorization(scopes=%r, note=%r)' % (ghc.debugtag(), scopes, note))
+                ghc.debug('create_authorization(scopes=%r, note=%r)', scopes, note)
                 if not cx.dry_run:
                     auth = ghuser.create_authorization(scopes=scopes, note=note)
                     print auth.token
             elif cx.opts['list'] and cx.opts['users']:
-                org = cx.github.default_connection().org(myorg)
+                org = cx.github.default_connection().org()
                 org.open()
-                logging.debug('%s get_members()' % (org.debugtag(),))
+                org.debug('get_members()')
                 users = list(org.open().get_members())
                 users.sort(key=lambda u: (u.login, u.name))
                 for user in users:
                     print '%-20s %-30s %s' % (user.login, user.name or '', user.email or '')
             elif cx.opts['list'] and cx.opts['repos']:
-                org = cx.github.default_connection().org(myorg)
+                org = cx.github.default_connection().org()
                 org.open()
-                logging.debug('%s get_repos()' % (org.debugtag(),))
+                org.debug('get_repos()')
                 repos = org.open().get_repos()
                 for repo in repos:
                     print repo.name
             elif cx.opts['list'] and cx.opts['issues']:
                 repo_name = cx.opts['<repo-name>']
-                repo = cx.github.default_connection().org(myorg).repo(repo_name)
+                repo = cx.github.default_connection().org().repo(repo_name)
                 repo.open()
                 all_issues = []
                 if cx.opts['--open'] or not cx.opts['--closed']:
-                    logging.debug('%s get_issues(state="open")' % (repo.debugtag(),))
+                    repo.debug('get_issues(state="open")')
                     all_issues += repo.open().get_issues(state='open')
                 if cx.opts['--closed'] or not cx.opts['--open']:
-                    logging.debug('%s get_issues(state="closed")' % (repo.debugtag(),))
+                    repo.debug('get_issues(state="closed")')
                     all_issues += repo.open().get_issues(state='closed')
                 all_issues.sort(key=lambda p: p.number)
                 for issue in all_issues:
@@ -294,14 +295,14 @@ def main():
                     issue_number = int(cx.opts['<issue-number>'])
                 except ValueError:
                     fatal('invalid <issue-number>')
-                issue = cx.github.default_connection().org(myorg).repo(repo_name).issue(issue_number)
+                issue = cx.github.default_connection().org().repo(repo_name).issue(issue_number)
                 issue.open()
                 issue.dump()
             elif cx.opts['create'] and cx.opts['issue']:
                 repo_name = cx.opts['<repo-name>']
                 title = cx.opts['<title>']
                 body = cx.opts['<body>']
-                repo = cx.github.default_connection().org(myorg).repo(repo_name)
+                repo = cx.github.default_connection().org().repo(repo_name)
                 repo.open()
                 labels = []
                 issue = repo.new_issue()
@@ -313,7 +314,7 @@ def main():
                     issue_number = int(cx.opts['<issue-number>'])
                 except ValueError:
                     fatal('invalid <issue-number>')
-                issue = cx.github.default_connection().org(myorg).repo(repo_name).get_issue(issue_number)
+                issue = cx.github.default_connection().org().repo(repo_name).get_issue(issue_number)
                 issue.open()
                 if cx.opts['milestone']:
                     issue.edit(milestone=None, dry_run=cx.dry_run)
@@ -347,7 +348,7 @@ def main():
                 creator_ghc = cx.github.default_connection()
             else:
                 creator_ghc = authentic_creator_ghc
-            repo = creator_ghc.org(myorg).repo(repo_name)
+            repo = creator_ghc.org().repo(repo_name)
             repo.open()
             # Fetch all GitHub issues to which this Mantis issue has already been migrated.
             migrated_github_issues = []
@@ -443,29 +444,29 @@ def main():
                     logging.warn('Mantis issue %r is %s (%s), so cannot %s' % (mantis_issue_id, status, resolution, ' and '.join(mantis_actions)))
                     fatal('use --testing to leave the Mantis issue unaltered, or reopen the Mantis issue and try again')
             # Discover things about the destination GitHub repo.
-            logging.debug('%s get_milestones(state="open")' % (repo.debugtag(),))
+            repo.debug('get_milestones(state="open")')
             repo_milestones_open = list(repo.open().get_milestones(state='open'))
-            logging.debug('   got %r' % [milestone.title for milestone in repo_milestones_open])
-            logging.debug('%s get_milestones(state="closed")' % (repo.debugtag(),))
+            repo.debug('   got %r', [milestone.title for milestone in repo_milestones_open])
+            repo.debug('get_milestones(state="closed")')
             repo_milestones_closed = list(repo.open().get_milestones(state='closed'))
-            logging.debug('   got %r' % [milestone.title for milestone in repo_milestones_closed])
+            repo.debug('   got %r', [milestone.title for milestone in repo_milestones_closed])
             repo_milestones = repo_milestones_open + repo_milestones_closed
-            logging.debug('%s get_labels()' % (repo.debugtag(),))
+            repo.debug('get_labels()')
             repo_labels = dict((label.name, label) for label in repo.open().get_labels())
-            logging.debug('   got %r' % list(repo_labels))
+            repo.debug('   got %r', list(repo_labels))
             # Create GitHub "mantis" label unless it already exists, in which case make sure it is
             # the right colour.
             label_name = 'mantis'
             label_colour = '034c31' # Mantis logo text colour
             label = repo_labels.get(label_name)
             if label is None:
-                logging.debug('%s create_label(name=%r, color=%r)' % (repo.debugtag(), label_name, label_colour))
+                repo.debug('create_label(name=%r, color=%r)', label_name, label_colour)
                 if not cx.dry_run:
                     label = repo.open().create_label(name=label_name, color=label_colour)
                     if not label:
                         fatal('cannot create label %r' % (label_name,))
             elif label.color.lower() != label_colour:
-                logging.debug('%s label=%r edit(name=%r, color=%r)' % (repo.debugtag(), label_name, label_name, label_colour))
+                repo.debug('label=%r edit(name=%r, color=%r)', label_name, label_name, label_colour)
                 if not cx.dry_run:
                     label.edit(name=label_name, color=label_colour)
             # Start assembling the body, comments and labels of the GitHub issue.
@@ -639,9 +640,9 @@ def main():
                 if overwrite_issue is not delete_issue:
                     kwargs['state'] = 'closed'
                 delete_issue.edit(dry_run=cx.dry_run, **kwargs)
-                logging.debug('%s get_comments()' % (delete_issue.debugtag(),))
+                delete_issue.debug('get_comments()')
                 for comment in delete_issue.open().get_comments():
-                    logging.debug('%s delete()' % (delete_issue.debugtag(comment=comment),))
+                    delete_issue.debug('comment=%r delete()', comment.id)
                     if not cx.dry_run:
                         comment.delete()
             if overwrite_issue is None:
@@ -666,13 +667,13 @@ def main():
             # Set the GitHub comments.
             comments.sort(key=lambda c: c[0])
             for commenter_time, commenter_ghc, comment_body in comments:
-                commenter_issue = commenter_ghc.org(myorg).repo(repo_name).issue(issue.number)
+                commenter_issue = commenter_ghc.org().repo(repo_name).issue(issue.number)
                 if comment_body is closemark:
                     commenter_issue.edit(state='closed', dry_run=cx.dry_run)
                     if not cx.dry_run and commenter_issue.open().state != 'closed':
                         logging.warn('cannot close issue #%r' % (commenter_issue.number,))
                 else:
-                    logging.debug('%s create_comment(%r)' % (commenter_issue.debugtag(), comment_body))
+                    commenter_issue.debug('create_comment(%r)', comment_body)
                     if not cx.dry_run:
                         commenter_issue.open().create_comment(comment_body)
             # If this issue replaces an existing migration of the same Mantis issue, then put a
@@ -688,11 +689,11 @@ def main():
             if not cx.testing:
                 if overwrite_issue is None or overwrite_issue.ref not in migrated_github_refs:
                     text = MantisInterface.MIGRATION_TEXT + getattr(issue.open(), 'html_url', 'None')
-                    logging.debug('Mantis add_note(%r, %r)' % (mantis_issue_id, text))
+                    cx.mantis.debug('add_note(%r, %r)', mantis_issue_id, text)
                     if not cx.dry_run:
                         cx.mantis.add_note(mantis_issue_id, text)
                 if status != 'closed' or resolution != 'suspended':
-                    logging.debug('Mantis update_status(%r, status=%r, resolution=%r)' % (mantis_issue_id, 'closed', 'suspended'))
+                    cx.mantis.debug('update_status(%r, status=%r, resolution=%r)', mantis_issue_id, 'closed', 'suspended')
                     if not cx.dry_run:
                         cx.mantis.update_status(mantis_issue_id, 'closed', 'suspended')
         # TODO: command to upgrade GitHub links
@@ -714,9 +715,21 @@ def fatal(message):
 def serval_tools_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 
-class MantisInterface(object):
+class DebuggableObject(object):
 
-    debug = False
+    def debug(self, msg, *args, **kwargs):
+        tag = self.debugtag()
+        if tag:
+            logging.debug('%s ' + msg, tag, *args, **kwargs)
+        else:
+            logging.debug(msg, *args, **kwargs)
+
+    def debugtag(self):
+        return ''
+
+class MantisInterface(DebuggableObject):
+
+    debug_enabled = False
     url = None
     user = None
     password = None
@@ -729,6 +742,9 @@ class MantisInterface(object):
     _open_issues = None
     _closed_issues = None
     _issue_map = None
+
+    def debugtag(self):
+        return 'Mantis'
 
     def read_config(self, cp):
         try:
@@ -771,7 +787,7 @@ class MantisInterface(object):
         if not self._client:
             import suds
             url = self.url_soap()
-            logging.debug('create Mantis SOAP client, url=%r' % (url,))
+            self.debug('create SOAP client, url=%r', url)
             self._client = suds.client.Client(url)
         return self._client
 
@@ -794,7 +810,7 @@ class MantisInterface(object):
         import suds
         try:
             client = self.client()
-            logging.debug('Mantis %s(%s)' % (method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems())))
+            self.debug('%s(%s)', method, ', '.join('%s=%s' % i for i in safe_kwargs.iteritems()))
             return getattr(client.service, method)(**kwargs)
         except suds.WebFault, e:
             if self.debug:
@@ -1031,26 +1047,30 @@ class GithubIssueRef(object):
         obj.issue_number = int(m.group(3))
         return obj
 
-class GithubInterface(object):
-    debug = False
+class GithubInterface(DebuggableObject):
+    debug_enabled = False
     login = None
     password = None
+    default_org_name = None
     user_tokens = ()
     _main = None
     _connections = ()
 
+    def debugtag(self):
+        return 'GitHub'
+
     def read_config(self, cp):
         try:
             self.login = cp.get('github', 'login', False, os.environ)
-        except ConfigParser.NoSectionError:
-            pass
-        except ConfigParser.NoOptionError:
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             pass
         try:
             self.password = cp.get('github', 'password', False, os.environ)
-        except ConfigParser.NoSectionError:
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             pass
-        except ConfigParser.NoOptionError:
+        try:
+            self.default_org_name = cp.get('github', 'org', False, os.environ)
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             pass
         self.user_tokens = {}
         try:
@@ -1061,7 +1081,7 @@ class GithubInterface(object):
 
     def main(self):
         if not self._main:
-            self._main = GithubConnection()
+            self._main = GithubConnection(self)
             self._main.login = self.login
             self._main.password = self.password
         return self._main
@@ -1072,7 +1092,7 @@ class GithubInterface(object):
         if login not in self._connections:
             conn = None
             if login in self.user_tokens:
-                conn = GithubConnection()
+                conn = GithubConnection(self)
                 conn.login = login
                 conn.token = self.user_tokens[login]
             self._connections[login] = conn
@@ -1111,30 +1131,38 @@ class GithubInterface(object):
             r += ['<%s>' % user.email]
         return ' '.join(r)
 
-class GithubConnection(object):
+class GithubConnection(DebuggableObject):
+    interface = None
     login = None
     password = None
     token = None
     _object = None
     _orgs = None
 
+    def __init__(self, interface):
+        self.interface = interface
+
     def debugtag(self):
-        return 'GitHub login=%r' % (self.login,)
+        return self.interface.debugtag() + ' login=%r' % (self.login,)
 
     def open(self):
         if not self._object:
             import github
             if self.password:
-                logging.debug('connect to GitHub as %r using password' % (self.login,))
+                self.debug('connect as %r using password', self.login)
                 self._object = github.Github(self.login, self.password)
             elif self.token:
-                logging.debug('connect to GitHub as %r using token' % (self.login,))
+                self.debug('connect as %r using token', self.login)
                 self._object = github.Github(self.token)
             else:
                 fatal('missing GitHub password or token for login %r' % (self.login,))
         return self._object
 
-    def org(self, name):
+    def org(self, name=None):
+        if name is None:
+            name = self.interface.default_org_name
+            if not name:
+                fatal('GitHub org name not specified: add to config file or use --github-org=NAME')
         if not self._orgs:
             self._orgs = {}
         if name not in self._orgs:
@@ -1144,7 +1172,7 @@ class GithubConnection(object):
     def issue(self, ref):
         return self.org(ref.org_name).repo(ref.repo_name).issue(ref.issue_number)
 
-class GithubOrg(object):
+class GithubOrg(DebuggableObject):
     name = None
     connection = None
     _object = None
@@ -1169,10 +1197,13 @@ class GithubOrg(object):
             return obj.org == self
         return False
 
+    def debugtag(self):
+        return self.connection.debugtag() + ' org=%r' % self.name
+
     def open(self):
         if not self._object:
             conn = self.connection.open()
-            logging.debug('%s get_organization(%r)' % (self.connection.debugtag(), self.name))
+            self.connection.debug('get_organization(%r)', self.name)
             self._object = conn.get_organization(self.name)
         return self._object
 
@@ -1183,10 +1214,7 @@ class GithubOrg(object):
             self._repos[name] = GithubRepo(self, name)
         return self._repos[name]
 
-    def debugtag(self):
-        return self.connection.debugtag() + ' org=%r' % self.name
-
-class GithubRepo(object):
+class GithubRepo(DebuggableObject):
     name = None
     org = None
     ref = None
@@ -1211,15 +1239,15 @@ class GithubRepo(object):
             return obj.repo == self
         return False
 
+    def debugtag(self):
+        return self.org.debugtag() + ' repo=%r' % self.name
+
     def open(self):
         if not self._object:
             org = self.org.open()
-            logging.debug('%s get_repo(%r)' % (self.org.debugtag(), self.name))
+            self.org.debug('get_repo(%r)', self.name)
             self._object = org.get_repo(self.name)
         return self._object
-
-    def debugtag(self):
-        return self.org.debugtag() + ' repo=%r' % self.name
 
     def issue(self, number):
         assert isinstance(number, int)
@@ -1237,7 +1265,7 @@ class GithubRepo(object):
             self._issues = {}
         self._issues[issue.number] = issue
 
-class GithubIssue(object):
+class GithubIssue(DebuggableObject):
     number = None
     repo = None
     ref = None
@@ -1255,11 +1283,14 @@ class GithubIssue(object):
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def debugtag(self):
+        return self.repo.debugtag() + ' issue=%r' % self.number
+
     def open(self):
         if not self._object:
             assert self.number is not None
             repo = self.repo.open()
-            logging.debug('%s get_issue(%r)' % (self.repo.debugtag(), self.number))
+            self.repo.debug('get_issue(%r)', self.number)
             if self.number > 0:
                 self._object = repo.get_issue(self.number)
         return self._object
@@ -1268,7 +1299,7 @@ class GithubIssue(object):
         assert self._object is None
         assert self.number is None
         repo = self.repo.open()
-        logging.debug('%s create_issue(%s)' % (self.repo.debugtag(), self._args_str(title=title, body=body, labels=labels)))
+        self.repo.debug('create_issue(%s)', self._args_str(title=title, body=body, labels=labels))
         if dry_run:
             self._dry_run_numbers[0] -= 1
             self.number = self._dry_run_numbers[0]
@@ -1280,7 +1311,7 @@ class GithubIssue(object):
         return self._object
 
     def edit(self, dry_run=False, **kwargs):
-        logging.debug('%s edit(%s)' % (self.debugtag(), self._args_str(**kwargs)))
+        self.debug('edit(%s)', self._args_str(**kwargs))
         if not dry_run and self.number is not None and self.number > 0:
             self.open()
             # Issue.edit(labels=) takes list of strings, not Label objects.
@@ -1304,13 +1335,6 @@ class GithubIssue(object):
             r.append('%s=%s' % (name, arg))
         return ', '.join(r)
 
-    def debugtag(self, comment=None):
-        r = [self.repo.debugtag()]
-        r += ['issue=%r' % self.number]
-        if comment:
-            r += ['comment=%r' % comment.id]
-        return ' '.join(r)
-
     def is_deleted(self):
         self.open()
         return self._object.comments == 0 and self._object.title == 'DELETED'
@@ -1319,7 +1343,7 @@ class GithubIssue(object):
         self.open()
         if not self._object.comments:
             return False
-        logging.debug('%s get_comments()' % (self.debugtag(),))
+        self.debug('get_comments()')
         comments = list(self._object.get_comments())
         return comments and mantis.issue_link_markdown(mantis_issue_id) in comments[0].body
 
@@ -1362,9 +1386,9 @@ class GithubIssue(object):
         print 'body', '=', comment.body
 
 
-class Context(object):
+class Context(DebuggableObject):
     map_path = None
-    debug = False
+    debug_enabled = False
     dry_run = False
     opts = None
     mantis = MantisInterface()
@@ -1415,11 +1439,11 @@ class Context(object):
         ghc, ref = None, None
         if login is None:
             ref = self.mantis.user_markdown(mantis_account)
-            logging.debug('mantis user %r does not resolve to GitHub user' % (mantis_account.name,))
+            self.debug('mantis user %r does not resolve to GitHub user', mantis_account.name)
         else:
             ref = '@' + login
             ghc = self.github.connection(login)
-            logging.debug('resolved mantis user %r to GitHub %r %s' % (mantis_account.name, ref, '(auth)' if ghc else '(no auth)'))
+            self.debug('resolved mantis user %r to GitHub %r %s', mantis_account.name, ref, '(auth)' if ghc else '(no auth)')
         return ghc, ref
 
     def mantis_issue_ref_markdown(self, mantis_issue_id, github_target_issue=None):
