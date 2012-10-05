@@ -82,7 +82,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '1.0'
+myversion = '1.1'
 myurl = 'https://github.com/servalproject/serval-tools/blob/master/bin/' + myname
 
 import sys
@@ -310,7 +310,7 @@ def main():
             github_issue_number = None
             if cx.opts['<github-issue-number>']:
                 try:
-                    github_issue_number = int(cx.opts['<github-issue-number>'])
+                    github_issue_number = int(cx.opts['<github-issue-number>'][0])
                 except ValueError:
                     fatal('invalid <github-issue-number>')
             # Fetch the original Mantis issue.
@@ -638,7 +638,7 @@ def main():
             if delete_issue:
                 delete_issue.open()
                 # If we are not going to overwrite this issue, then close it as well as deleting it.
-                delete_issue.delete(state= 'closed' if overwrite_issue != delete_issue else None)
+                delete_issue.delete(state= 'closed' if overwrite_issue != delete_issue else None, dry_run=cx.dry_run)
             # If a new issue is being created, create it now, otherwise overwrite it.
             if overwrite_issue is None:
                 issue = repo.new_issue()
@@ -678,7 +678,7 @@ def main():
             # _after_ all the migrated comments are added, because it creates a comment in the
             # GitHub issue that should not be the first comment.
             if delete_issue and issue != delete_issue:
-                body = 'Superceded by %s' % issue.ref.markdown(delete_issue.ref)
+                body = GithubIssue.SUPERCEDED_TEXT + issue.ref.markdown(delete_issue.ref)
                 delete_issue.edit(body=body, dry_run=cx.dry_run)
             # Mark the Mantis issue as migrated: add a note linking to the GitHub issue, and close
             # the Mantis issue with resolution "suspended".
@@ -1486,8 +1486,12 @@ class GithubIssue(DebuggableObject):
 
     def is_deleted(self):
         self.open()
-        return self._object.comments == 0 and self._object.title == 'DELETED'
+        return (    self._object.comments == 0
+                and self._object.title == 'DELETED'
+                and (self._object.body == '' or self._object.body.startswith(self.SUPERCEDED_TEXT))
+               )
 
+    SUPERCEDED_TEXT = 'Superceded by '
     MIGRATION_TEXT = 'Originally reported as '
 
     def is_migrated_from(self, mantis, mantis_issue_id):
@@ -1678,17 +1682,6 @@ class Context(DebuggableObject):
             or  len(re.findall(r'^ *(DEBUG|WARN|INFO|ERROR):', text, flags=re.MULTILINE)) >= 3
             or  len(re.findall(r'^ *[EWIDV]/', text, flags=re.MULTILINE)) >= 3
             ):
-            # WARNING for bug in GitHub API.
-            percents = re.findall(r'%(?![0-9A-Fa-f]{2})', text)
-            if percents:
-                logging.warn(
-r'''Preformat text contains %u occurence%s of '%%' character not
-followed by two hex digits, which would cause api.github.com to return a
-500 Server Error, so every occurrence is replaced with &#37;.  You will
-need to manually edit the text to revert these to '%%' characters.
-See https://github.com/jacquev6/PyGithub/issues/87''' %
-                        (len(percents), 's' if len(percents) != 1 else '')
-                    )
             text = '```\n' + text + '\n```'
         else:
             # Remove trailing newlines and blank lines.
@@ -1711,9 +1704,6 @@ See https://github.com/jacquev6/PyGithub/issues/87''' %
         def make_link(mantis_issue_id):
             return ' '.join(self.mantis_issue_link_markdown(mantis_issue_id, target_issue_ref, linkset=linkset))
         text = self.mantis.rewrite_markdown_links(text, make_link)
-        # WORKAROUND for bug in GitHub API: replace percent signs that are not followed by two hex
-        # digits with HTML escape.
-        text = re.subn(r'%(?![0-9A-Fa-f]{2})', '&#37;', text)[0]
         return text
 
     def relink(self, todo, repo_ref=None):
