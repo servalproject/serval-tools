@@ -82,7 +82,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '0.99'
+myversion = '1.0'
 myurl = 'https://github.com/servalproject/serval-tools/blob/master/bin/' + myname
 
 import sys
@@ -315,6 +315,8 @@ def main():
                     fatal('invalid <github-issue-number>')
             # Fetch the original Mantis issue.
             mantis_issue = cx.mantis.get_issue(mantis_issue_id)
+            if mantis_issue is None:
+                fatal("cannot fetch mantis issue %d" % (mantis_issue_id,))
             status = getattr(getattr(mantis_issue, 'status', None), 'name', None)
             resolution = getattr(getattr(mantis_issue, 'resolution', None), 'name', None)
             mantis_issue_closed = status in ('closed', 'resolved')
@@ -532,12 +534,13 @@ def main():
                     if related.type.name == 'related to':
                         related_issue_id = related.target_id
                         related_mantis_issue = cx.mantis.get_issue(related_issue_id)
-                        body += ['\nRelated to:']
-                        for md in cx.mantis_issue_link_markdown(related_issue_id, target_issue_ref, linkset=to_relink):
-                            body += [' **%s**' % md]
-                        related_title = unicode(related_mantis_issue.summary)
-                        if related_title:
-                            body += [' **', cx.escape_markdown(related_title), '**']
+                        if related_mantis_issue is not None:
+                            body += ['\nRelated to:']
+                            for md in cx.mantis_issue_link_markdown(related_issue_id, target_issue_ref, linkset=to_relink):
+                                body += [' **%s**' % md]
+                            related_title = unicode(related_mantis_issue.summary)
+                            if related_title:
+                                body += [' **', cx.escape_markdown(related_title), '**']
             body += ['\nCan reproduce: **', mantis_issue.reproducibility.name, '**']
             if hasattr(mantis_issue, 'steps_to_reproduce') and mantis_issue.steps_to_reproduce:
                 body += ['\nTo reproduce:\n\n', cx.text_to_markdown(mantis_issue.steps_to_reproduce, target_issue_ref, linkset=to_relink)]
@@ -692,6 +695,7 @@ def main():
             # Relink all issues that are likely to contain references to the one just migrated.
             cx.add_mantis_github_issue_ref(mantis_issue_id, issue.ref)
             cx.relink(to_relink, repo.ref)
+            logging.info('migration complete')
         elif cx.opts['migrated']:
             try:
                 mantis_issue_ids = map(int, cx.opts['<mantis-issue-id>'])
@@ -700,7 +704,11 @@ def main():
             if mantis_issue_ids:
                 mantis_issues = {}
                 for mantis_issue_id in mantis_issue_ids:
-                    mantis_issues[mantis_issue_id] = cx.mantis.get_issue(mantis_issue_id)
+                    mantis_issue = cx.mantis.get_issue(mantis_issue_id)
+                    if mantis_issue is None:
+                        logging.warn('cannot fetch mantis issue %d' % (mantis_issue_id,))
+                    else:
+                        mantis_issues[mantis_issue_id] = mantis_issue
             else:
                 mantis_issues = cx.mantis.get_issues()
             for mantis_issue_id, mantis_issue in mantis_issues.iteritems():
@@ -932,20 +940,24 @@ class MantisInterface(DebuggableObject):
                 self._projects[project.id] = project
         return self._projects
 
-    def get_issue(self, issue_id):
+    def get_issue(self, mantis_issue_id):
         for idict in self._open_issues, self._closed_issues:
-            if idict and issue_id in idict:
-                return idict[issue_id]
-        issue = self.service_cred('mc_issue_get', issue_id=issue_id)
-        if issue.status.name in ('resolved', 'closed'):
+            if idict and mantis_issue_id in idict:
+                return idict[mantis_issue_id]
+        import suds
+        try:
+            mantis_issue = self.service_cred('mc_issue_get', issue_id=mantis_issue_id, exception_fatal=False)
+        except suds.WebFault:
+            return None
+        if mantis_issue.status.name in ('resolved', 'closed'):
             if self._closed_issues is None:
                 self._closed_issues = {}
-            self._closed_issues[issue_id] = issue
+            self._closed_issues[mantis_issue_id] = mantis_issue
         else:
             if self._open_issues is None:
                 self._open_issues = {}
-            self._open_issues[issue_id] = issue
-        return issue
+            self._open_issues[mantis_issue_id] = mantis_issue
+        return mantis_issue
 
     def get_open_issues(self, project_ids=None, per_page=100, **kwopts):
         if self._open_issues is None:
@@ -983,7 +995,7 @@ class MantisInterface(DebuggableObject):
                     try:
                         issue = self.service_cred('mc_issue_get', issue_id=id, exception_fatal=False, **kwopts)
                         self._closed_issues[issue.id] = issue
-                    except suds.WebFault, e:
+                    except suds.WebFault:
                         pass
         ret = dict()
         for issue_id, issue in self._closed_issues.iteritems():
@@ -1015,24 +1027,25 @@ class MantisInterface(DebuggableObject):
         Mantis issue id, or a GithubIssueRef to indicate a GitHub issue.
         '''
         mantis_issue = self.get_issue(mantis_issue_id)
-        if hasattr(mantis_issue, 'relationships') and mantis_issue.relationships:
-            for rel in mantis_issue.relationships:
-                if rel.type.name == 'related to':
-                    yield rel.target_id
-        texts = [mantis_issue.description]
-        if hasattr(mantis_issue, 'steps_to_reproduce') and mantis_issue.steps_to_reproduce:
-            texts.append(mantis_issue.steps_to_reproduce)
-        if hasattr(mantis_issue, 'additional_information') and mantis_issue.additional_information:
-            texts.append(mantis_issue.additional_information)
-        if hasattr(mantis_issue, 'notes') and mantis_issue.notes:
-            texts += (note.text for note in mantis_issue.notes)
-        for text in texts:
-            for ref in GithubInterface.extract_issue_links(text):
-                yield ref
-            for id in self.extract_referred_mantis_issue_ids(text):
-                yield id
-            for id in self.extract_linked_mantis_issue_ids(text):
-                yield id
+        if mantis_issue is not None:
+            if hasattr(mantis_issue, 'relationships') and mantis_issue.relationships:
+                for rel in mantis_issue.relationships:
+                    if rel.type.name == 'related to':
+                        yield rel.target_id
+            texts = [mantis_issue.description]
+            if hasattr(mantis_issue, 'steps_to_reproduce') and mantis_issue.steps_to_reproduce:
+                texts.append(mantis_issue.steps_to_reproduce)
+            if hasattr(mantis_issue, 'additional_information') and mantis_issue.additional_information:
+                texts.append(mantis_issue.additional_information)
+            if hasattr(mantis_issue, 'notes') and mantis_issue.notes:
+                texts += (note.text for note in mantis_issue.notes)
+            for text in texts:
+                for ref in GithubInterface.extract_issue_links(text):
+                    yield ref
+                for id in self.extract_referred_mantis_issue_ids(text):
+                    yield id
+                for id in self.extract_linked_mantis_issue_ids(text):
+                    yield id
 
     MIGRATION_TEXT = 'This issue is now being tracked on GitHub: '
 
@@ -1072,13 +1085,14 @@ class MantisInterface(DebuggableObject):
         self._invalidate_issue(mantis_issue_id)
 
     def update_status(self, mantis_issue_id, status=None, resolution=None):
-        issue = self.get_issue(mantis_issue_id)
+        mantis_issue = self.get_issue(mantis_issue_id)
         self._invalidate_issue(mantis_issue_id)
-        if status:
-            issue.status = self.get_enum_status(status)
-        if resolution:
-            issue.resolution = self.get_enum_resolutions(resolution)
-        return self.service_cred('mc_issue_update', issueId=mantis_issue_id, issue=issue)
+        if mantis_issue is not None:
+            if status:
+                mantis_issue.status = self.get_enum_status(status)
+            if resolution:
+                mantis_issue.resolution = self.get_enum_resolutions(resolution)
+            return self.service_cred('mc_issue_update', issueId=mantis_issue_id, issue=mantis_issue)
 
 class GithubIssueRef(object):
     org_name = None
@@ -1630,10 +1644,11 @@ class Context(DebuggableObject):
         if mantis_issue_id not in self._issue_map:
             mantis_issue = self.mantis.get_issue(mantis_issue_id)
             refs = []
-            for ref in self.mantis.migrated_github_references(mantis_issue):
-                issue = self.github.default_connection().issue(ref)
-                if not issue.is_deleted() and issue.is_migrated_from(self.mantis, mantis_issue_id):
-                    refs.append(ref)
+            if mantis_issue is not None:
+                for ref in self.mantis.migrated_github_references(mantis_issue):
+                    issue = self.github.default_connection().issue(ref)
+                    if not issue.is_deleted() and issue.is_migrated_from(self.mantis, mantis_issue_id):
+                        refs.append(ref)
             self._issue_map[mantis_issue_id] = refs
         return iter(self._issue_map[mantis_issue_id])
 
