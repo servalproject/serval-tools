@@ -1,10 +1,10 @@
 serval-tools
 ============
 
-Various tools that the Serval Project uses to develop its software.
+Various tools that the [Serval Project][] uses to develop its software.
 
-Shell utilities
----------------
+Command-line utilities
+----------------------
 
 To use these utilities, check out the **serval-tools** repository somewhere
 (eg, into /usr/local/serval-tools) and add its *bin* directory to your path,
@@ -12,121 +12,30 @@ eg, by putting the following line into your shell's $HOME/.profile:
 
     export PATH="$PATH:/usr/local/serval-tools/bin"
 
-None of these utilities make any assumptions about your layout of Serval source
-code Git repositories.  They all act on the current directory and the current
-Git repository as determined by the current working directory.
+The following utilities are aimed at making it easier to work with Git and Git
+submodules.  They make no assumptions about the layout of source code Git
+repositories.  They all act on the current directory and the current Git
+repository as determined by the current working directory.
 
-### `sp-ls-files`
+* [sp-ls-files](doc/sp-ls-files.md) is a wrapper around **git ls-files** that
+  handles submodules
 
-A wrapper around **git ls-files** that handles submodules intelligently.  For
-more information:
+* [sp-find](doc/sp-find.md) is a wrapper around the standard *find*(1) utility
+  that excludes files ignored by Git
 
-    sp-ls-files --help
+* [sp-grep](doc/sp-grep.md) searches all files in the current Git working copy
+  and its submodules
 
-All options not recognised by sp-ls-files itself are passed verbatim to *git
-ls-files*.  If no such options are given, then sp-ls-files invokes *git
-ls-files* with the options `--exclude-standard --cached --other`, which lists
-all files that are not ignored, including files that are not being tracked by
-Git (ie, are pending *git add*.)
+* [sp-mktags](doc/sp-mktags.md) generates **tags** and **cscope.out** index
+  files for the current Git working copy
 
-All pathnames output by sp-ls-files are relative to the caller's current
-working directory.
+* [sp-exclude-directories](doc/sp-exclude-directories.md) is a simple filter
+  that removes all lines that name a directory
 
-The options recognised by sp-ls-files are:
+The following utility is a general-purpose script for migrating issues from a
+Mantis bug tracker to the GitHub Issues list of any GitHub repository:
 
-*  **`-S`** or **`--submodules`**
-   Cause sp-ls-files to list all files in the current outermost enclosing Git
-   repository, including in all submodules of that repository.  For example, if
-   you are inside the batphone/jni/serval-dna submodule, `sp-ls-files -S` will
-   list all files in the `batphone` repository and all of its submodules,
-   including jni/serval-dna itself.
-
-*  **`--no-submodules`** (the default)
-   Causes sp-ls-files to treat its arguments as path names of files or
-   directories, and invokes *git ls-files* on each argument in turn after
-   changing directory to the root of the Git repository containing the path.
-   This allows you to list files within submodules of the current repository,
-   which *git ls-files* does not support.
-
-   If no arguments are given, then sp-ls-files behaves just like *git ls-files*
-   with no arguments, ie, lists the files in the current (innermost) Git
-   repository.
-
-### `sp-find`
-
-A wrapper around the standard *find*(1) utility that excludes files ignored by
-the current outermost enclosing Git repository and all its submodules.
-
-This is very convenient for performing project-wide searches without searching
-intermediate build files.  It was originally developed to stop sp-grep from
-matching twice in the serval-dna repository, which concatenates all of its C
-header and source files into `serval.c` while building.
-
-sp-find invokes *sp-ls-files --submodules* to discover all the files that Git
-ignores.
-
-_Known issue_: sp-find does not deal with path names that contain spaces,
-either on the command line or in the output from *sp-ls-files*.
-
-### `sp-grep`
-
-Searches all files in the current outermost enclosing Git repository for a
-given pattern, analogous to the **find -type f | xargs grep** idiom, except
-that it uses *sp-ls-files --submodules* instead of *find*(1).  All arguments
-are passed directly to the `grep` command.  For more information:
-
-    sp-grep --help
-
-sp-grep recognises the following special options that it does not pass through
-to *grep*:
-
-*  **`--java`**  Only search in files ending in `.java`
-*  **`--xml`**   Only search in files ending in `.xml`
-*  **`--c`**     Only search in files ending in `.h` or `.c`
-
-These options are cumulative, eg, giving `--java --xml` will search in all Java
-and XML files.
-
-A convenient wrapper script makes invoking sp-grep even easier.  Place the
-following script called **`jgrep`** in your personal bin directory:
-
-    #!/bin/sh
-    cd $HOME/path/to/my/serval/batphone/repository || exit $?
-    exec sp-grep --java "$@"
-
-Then you can type `jgrep string` to find all occurrences of `string` in all
-Java source files in the Serval source code.
-
-### `sp-mktags`
-
-Generates **tags** and **cscope.out** index files in the root directory of the
-current Git repository.  These indices make navigating C and Java source code
-very easy in Vim and other editors that support ctags and cscope.  For more
-information:
-
-    sp-mktags --help
-
-If the **`--all`** option is given, then sp-mktags finds the current outermost
-enclosing Git repository, and generates *tags* and *cscope.out* files in its
-root directory and the root directories of all its submodules.
-
-If the `ndk-build` executable is found in the current `$PATH` and if a
-`project.properties` file is found in an enclosing directory and it contains a
-`target=` line, then sp-mktags includes the header files of the configured
-target Android NDK API in the *tags* and *cscope.out* files of any repository
-that contains at least one C header or source file.
-
-The following script in your personal bin directory will work regardless of
-whether your current working directory is within a Serval Git repository:
-
-    #!/bin/sh
-    cd $HOME/path/to/my/serval/batphone/repository || exit $?
-    exec sp-mktags --all
-
-### `sp-exclude-directories`
-
-A simple filter that removes all lines that name an existing directory.  This
-is used by *sp-grep* to ensure that it does not invoke *grep*(1) on directories.
+* [sp-mantis2github](doc/sp-mantis2github.md)
 
 Vim Git plugin
 --------------
@@ -144,3 +53,6 @@ path, eg, by putting the following line into your $HOME/.vimrc:
 The [plugin file](vim/plugin/gitdiff.vim) itself contains a block comment at
 the top describing the keymappings that it provides.  The author plans to
 create a Vim help file for the plugin soon.
+
+
+[Serval Project]: http://www.servalproject.org
