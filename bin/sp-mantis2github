@@ -85,7 +85,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '1.2'
+myversion = '1.3'
 myurl = 'https://github.com/servalproject/serval-tools/blob/master/bin/' + myname
 
 import sys
@@ -1513,8 +1513,10 @@ class GithubIssue(DebuggableObject):
         if not self._object.comments:
             return False
         self.debug('get_comments()')
-        comments = list(self._object.get_comments())
-        return comments and comments[0].body.startswith(self.MIGRATION_TEXT) and mantis.issue_link_markdown(mantis_issue_id) in comments[0].body
+        for comment in list(self._object.get_comments()):
+            if comment.body and comment.body.startswith(self.MIGRATION_TEXT) and mantis.issue_link_markdown(mantis_issue_id) in comment.body:
+                return True
+        return False
 
     def issue_refs(self):
         self.open()
