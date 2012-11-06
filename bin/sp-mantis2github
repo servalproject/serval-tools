@@ -43,9 +43,12 @@
     sp-mantis2github [options] github delete issue <repo-name> <issue-number>
     sp-mantis2github [options] migrate <issue-id> <repo-name> [<github-issue-number>]
     sp-mantis2github [options] migrated [<mantis-issue-id>...]
-    sp-mantis2github [options] relink <github-repo-name> [<github-issue-number>...]
+    sp-mantis2github [options] relink <repo-name>
+    sp-mantis2github [options] relink [<issue-reference>...]
     sp-mantis2github -h | --help
     sp-mantis2github --version
+Where:
+    <issue-reference> is    <repo-name>#<github-issue-number> or <mantis-issue-id>
 Options:
     -h --help               Show this message
     --version               Show version and exit
@@ -82,7 +85,7 @@ ignored unless owned by the caller and permissions are at most 0600.
 '''
 
 myname = 'sp-mantis2github'
-myversion = '1.1'
+myversion = '1.2'
 myurl = 'https://github.com/servalproject/serval-tools/blob/master/bin/' + myname
 
 import sys
@@ -720,20 +723,25 @@ def main():
                 if refs:
                     print '%u: %s' % (mantis_issue_id, ' '.join(map(str, refs)))
         elif cx.opts['relink']:
-            repo_name = cx.opts['<github-repo-name>']
-            try:
-                issue_numbers = map(int, cx.opts['<github-issue-number>'])
-            except ValueError:
-                fatal('invalid <github-issue-number>')
-            repo = cx.github.default_connection().org().repo(repo_name)
-            if issue_numbers:
-                issues = [repo.issue(i) for i in issue_numbers]
+            repo_name = cx.opts['<repo-name>']
+            issue_ref_args = cx.opts['<issue-reference>']
+            if repo_name and ('#' in repo_name or repo_name.isdigit()):
+                issue_ref_args.insert(0, repo_name)
+                repo_name = ''
+            if issue_ref_args:
+                issue_refs = []
+                for ref_arg in issue_ref_args:
+                    try:
+                        issue_refs.append(cx.parse_issue_reference(ref_arg))
+                    except ValueError, e:
+                        fatal('invalid <issue-reference>: ' + ref_arg)
             else:
+                repo = cx.github.default_connection().org().repo(repo_name)
                 state = 'open' if cx.opts['--open'] else None
                 if cx.opts['--closed']:
                     state = 'closed' if state is None else None
-                issues = list(repo.get_issues(state=state))
-            cx.relink(issues, repo.ref)
+                issue_refs = repo.get_issues(state=state)
+            cx.relink(issue_refs)
     except IOError, e:
         if cx.debug:
             traceback.print_exc()
@@ -1038,7 +1046,7 @@ class MantisInterface(DebuggableObject):
             if hasattr(mantis_issue, 'additional_information') and mantis_issue.additional_information:
                 texts.append(mantis_issue.additional_information)
             if hasattr(mantis_issue, 'notes') and mantis_issue.notes:
-                texts += (note.text for note in mantis_issue.notes)
+                texts += (note.text for note in mantis_issue.notes if note.text)
             for text in texts:
                 for ref in GithubInterface.extract_issue_links(text):
                     yield ref
@@ -1133,7 +1141,7 @@ class GithubIssueRef(object):
     @classmethod
     def fromstr(cls, text, relative_issue=None):
         obj = cls()
-        m = re.match(r'(?:([^/]+)/(^[/#]+))?#(\d+)$', text)
+        m = re.match(r'(?:([^/]+)/([^/#]+))?#(\d+)$', text)
         if not m:
             raise ValueError(text)
         if m.group(1) and m.group(2):
@@ -1361,8 +1369,14 @@ class GithubRepo(DebuggableObject):
             self._object = org.get_repo(self.name)
         return self._object
 
+    def issue_ref(self, number):
+        assert isinstance(number, int)
+        assert number >= 1
+        return GithubIssueRef(self.org.name, self.name, number)
+
     def issue(self, number):
         assert isinstance(number, int)
+        assert number >= 1
         if not self._issues:
             self._issues = {}
         if number not in self._issues:
@@ -1705,6 +1719,22 @@ class Context(DebuggableObject):
             return ' '.join(self.mantis_issue_link_markdown(mantis_issue_id, target_issue_ref, linkset=linkset))
         text = self.mantis.rewrite_markdown_links(text, make_link)
         return text
+
+    def parse_issue_reference(self, text):
+        r'''Parse the given string as either a GitHubIssueRef "repo#number" or
+        an int (Mantis issue id).
+        '''
+        m = re.match(r'([^/#]+)#(\d+)$', text)
+        if m:
+            repo_name = m.group(1)
+            github_issue_number = int(m.group(2))
+            if github_issue_number > 0:
+                return self.github.default_connection().org().repo(repo_name).issue_ref(github_issue_number)
+        else:
+            mantis_issue_id = int(text)
+            if mantis_issue_id > 0:
+                return mantis_issue_id
+        raise ValueError(text)
 
     def relink(self, todo, repo_ref=None):
         r'''Given an iterable over various objects: GithubIssueRef, GithubIssue and int (Mantis
