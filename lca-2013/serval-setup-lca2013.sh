@@ -261,14 +261,19 @@ link_system() {
    fi
 }
 
+# Link to reduce the chance of another (rogue) servald being started.
 link_system "$TARGET"/var/serval-node /var/serval-node
 
+# Links for convenience
 link_system "$TARGET"/etc/asterisk /etc/asterisk
+link_system "$TARGET"/var/log/asterisk /var/log/asterisk
 
-for file in "$TARGET"/etc/init.d/*; do
-   link_system "$file" /etc/init.d/"${file##*/}"
-done
-
-for file in "$TARGET"/etc/default/*; do
-   link_system "$file" /etc/default/"${file##*/}"
-done
+# Links for auto-startup on boot and auto-shutdown.
+link_system "$TARGET"/etc/init.d/serval-dna /etc/init.d/serval-dna
+link_system "$TARGET"/etc/default/serval-dna /etc/default/serval-dna
+link_system "$TARGET"/etc/init.d/asterisk /etc/init.d/asterisk
+link_system "$TARGET"/etc/default/asterisk /etc/default/asterisk
+update-rc.d -f serval-dna remove
+update-rc.d -f asterisk remove
+update-rc.d serval-dna defaults 81 18
+update-rc.d asterisk defaults 82 17
