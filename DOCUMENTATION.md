@@ -57,5 +57,11 @@ The [plugin file](vim/plugin/gitdiff.vim) itself contains a block comment at
 the top describing the keymappings that it provides.  The author plans to
 create a Vim help file for the plugin soon.
 
+Linux.conf.au 2013
+------------------
+
+The [lca-2013](./lca-2013) directory contains scripts and configuration file
+samples used to set up the Serval telephony server at Linux.conf.au 2013 held
+in Canberra from January 28 to February 5.
 
 [Serval Project]: http://www.servalproject.org

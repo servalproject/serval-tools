@@ -251,25 +251,24 @@ FUBAR
 
 EOF
 
-if [ -L /etc/asterisk -o ! -e /etc/asterisk ]; then
-   rm -f /etc/asterisk
-   ln -s -f "$TARGET"/etc/asterisk /etc
-fi
-
-pushd "$TARGET"/etc/init.d
-for file in *; do
-   if [ -L /etc/init.d/"$file" -o ! -e /etc/init.d/"$file" ]; then
-      rm -f /etc/init.d/"$file"
-      ln -s -f "$PWD/$file" /etc/init.d/"$file"
+link_system() {
+   # Make a symbolic link but don't clobber a real system file or directory.
+   local src="$1"
+   local dst="$2"
+   if [ -L "$dst" -o ! -e "$dst" ]; then
+      rm -f "$dst"
+      ln -s "$src" "$dst"
    fi
-done
-popd
+}
 
-pushd "$TARGET"/etc/default
-for file in *; do
-   if [ -L /etc/default/"$file" -o ! -e /etc/default/"$file" ]; then
-      rm -f /etc/default/"$file"
-      ln -s -f "$PWD/$file" /etc/default/"$file"
-   fi
+link_system "$TARGET"/var/serval-node /var/serval-node
+
+link_system "$TARGET"/etc/asterisk /etc/asterisk
+
+for file in "$TARGET"/etc/init.d/*; do
+   link_system "$file" /etc/init.d/"${file##*/}"
 done
-popd
+
+for file in "$TARGET"/etc/default/*; do
+   link_system "$file" /etc/default/"${file##*/}"
+done
