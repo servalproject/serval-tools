@@ -1,0 +1,109 @@
+#!/usr/bin/env python
+# vim: sw=4 sts=4 et fileencoding=utf8 nomod
+
+# Serval Project source code copyright and license reporting utility
+# Copyright 2013 Serval Project, Inc.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+# The following doc comment defines the command-line syntax, and drives its
+# parsing, via the docopt module.
+
+'''Usage:
+    sp-copyright-tool [options] summarise <sourcefile>...
+    sp-copyright-tool -h | --help
+    sp-copyright-tool --version
+Options:
+    -h --help               Show this message
+    --version               Show version and exit
+    -D --debug              Enable debug logging
+
+The config file is in INI format.  It contains user names and passwords in the clear so it is
+ignored unless owned by the caller and permissions are at most 0600.
+'''
+
+myname = 'sp-copyright-tool'
+myversion = '0.1'
+
+import sys
+import os.path
+import re
+from collections import defaultdict
+
+def main():
+    sys.path.append(os.path.join(serval_tools_root(), "python/docopt"))
+    import docopt
+    opts = docopt.docopt(__doc__, version=myversion)
+    if opts['summarise']:
+        summarise(opts['<sourcefile>'])
+
+_optspace = r'[ \t]*'
+_year = '(?:19[7-9][0-9]|20[0-5][0-9])'
+_re_copyright_notice = re.compile(
+    'Copyright' + _optspace + r'(?:(\(c\)|©),?)?' +
+    '(?:' + _optspace +
+        '(' +
+            _year +
+            '(?:' +
+                _optspace + '-' + _optspace + _year +
+            '|' +
+                '(?:' +
+                    _optspace + ',' + _optspace + _year +
+                ')*' +
+            ')' +
+        ')' + ',?' +
+    ')?' +
+    _optspace + r'(\S.*?)' + _optspace + '$',
+    re.IGNORECASE | re.MULTILINE)
+
+def summarise(paths):
+    h = defaultdict(lambda: defaultdict(list))
+    z = set()
+    for path in paths:
+        body = file(path).read()
+        has_copyright_notice = False
+        for m in _re_copyright_notice.finditer(body):
+            if (m.group(1) or m.group(2)) and m.group(3):
+                has_copyright_notice = True
+                years = m.group(2)
+                holder = m.group(3)
+                if '-' in years:
+                    first, last = years.split('-')
+                    years = range(int(first), int(last) + 1)
+                elif ',' in years:
+                    years = [int(y) for y in years.split(',')]
+                elif years:
+                    years = [int(years)]
+                else:
+                    years = [None]
+                for year in years:
+                    h[holder][year].append(path)
+        if not has_copyright_notice:
+            z.add(path)
+    for holder, years in h.iteritems():
+        for year, paths in years.iteritems():
+            print 'Copyright (C) %s %s' % (year, holder)
+            for path in paths:
+                print '   ', path
+    if z:
+        print 'No copyright'
+        for path in z:
+            print '   ', path
+
+def serval_tools_root():
+    return os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
+
+if __name__ == '__main__':
+    main()
