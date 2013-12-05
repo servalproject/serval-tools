@@ -30,9 +30,11 @@ Options:
     -h --help               Show this message
     --version               Show version and exit
     -D --debug              Enable debug logging
+    -o, --output=FILE       Write output to FILE instead of standard output
 
-The config file is in INI format.  It contains user names and passwords in the clear so it is
-ignored unless owned by the caller and permissions are at most 0600.
+The config file is in INI format.  It contains user names and passwords in the
+clear so it is ignored unless owned by the caller and permissions are at most
+0600.
 '''
 
 myname = 'sp-copyright-tool'
@@ -47,6 +49,8 @@ def main():
     sys.path.append(os.path.join(serval_tools_root(), "python/docopt"))
     import docopt
     opts = docopt.docopt(__doc__, version=myversion)
+    if opts['--output']:
+        sys.stdout = file(opts['--output'], 'w')
     if opts['summarise']:
         summarise(copyrights(opts['<sourcefile>']), show_paths=True)
     if opts['condense']:
