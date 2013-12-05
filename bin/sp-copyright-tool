@@ -23,6 +23,7 @@
 
 '''Usage:
     sp-copyright-tool [options] summarise <sourcefile>...
+    sp-copyright-tool [options] condense <sourcefile>...
     sp-copyright-tool -h | --help
     sp-copyright-tool --version
 Options:
@@ -47,7 +48,9 @@ def main():
     import docopt
     opts = docopt.docopt(__doc__, version=myversion)
     if opts['summarise']:
-        summarise(opts['<sourcefile>'])
+        summarise(copyrights(opts['<sourcefile>']), show_paths=True)
+    if opts['condense']:
+        summarise(copyrights(opts['<sourcefile>']))
 
 _optspace = r'[ \t]*'
 _year = '(?:19[7-9][0-9]|20[0-5][0-9])'
@@ -68,7 +71,7 @@ _re_copyright_notice = re.compile(
     _optspace + r'(\S.*?)' + _optspace + '$',
     re.IGNORECASE | re.MULTILINE)
 
-def summarise(paths):
+def copyrights(paths):
     h = defaultdict(lambda: defaultdict(list))
     z = set()
     for path in paths:
@@ -92,15 +95,48 @@ def summarise(paths):
                     h[holder][year].append(path)
         if not has_copyright_notice:
             z.add(path)
+    return h, z
+
+def summarise(copyrights, show_paths=False):
+    h, z = copyrights
+    pathyears = defaultdict(int)
     for holder, years in h.iteritems():
-        for year, paths in years.iteritems():
-            print 'Copyright (C) %s %s' % (year, holder)
-            for path in paths:
-                print '   ', path
-    if z:
+        pathyears[holder] = sum(len(paths) for paths in years.itervalues())
+    for holder in sorted(h, key=pathyears.__getitem__, reverse=True):
+        years = h[holder]
+        print 'Copyright (C) %s %s' % (year_ranges(years.keys()), holder)
+        if show_paths:
+            paths = defaultdict(list)
+            for year in sorted(years):
+                for path in years[year]:
+                    paths[path].append(year)
+            w = 0
+            for years in paths.itervalues():
+                w = max(w, len(year_ranges(years)))
+            for path in sorted(paths):
+                print '    %-*s  %s' % (w, year_ranges(paths[path]), path)
+    if show_paths and z:
         print 'No copyright'
         for path in z:
-            print '   ', path
+            print '    %s' % (path,)
+
+def year_ranges(years):
+    years = sorted(years)
+    a = years.pop(0)
+    b = a
+    r = [str(a)]
+    while years:
+        c = years.pop(0)
+        if c == b + 1:
+            b = c
+        else:
+            if b != a:
+                r[-1] += '-' + str(b)
+            a = c
+            b = c
+    if b != a:
+        r[-1] += '-' + str(b)
+    return ', '.join(r)
 
 def serval_tools_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
