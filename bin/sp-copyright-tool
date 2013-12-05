@@ -106,9 +106,10 @@ def summarise(copyrights, show_paths=False):
     pathyears = defaultdict(int)
     for holder, years in h.iteritems():
         pathyears[holder] = sum(len(paths) for paths in years.itervalues())
+    portions = 'Portions ' if len(h) > 1 or z else ''
     for holder in sorted(h, key=pathyears.__getitem__, reverse=True):
         years = h[holder]
-        print 'Copyright (C) %s %s' % (year_ranges(years.keys()), holder)
+        print '%sCopyright (C) %s %s' % (portions, year_ranges(years.keys()), holder)
         if show_paths:
             paths = defaultdict(list)
             for year in sorted(years):
