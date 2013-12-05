@@ -114,7 +114,7 @@ sudo -E -u serval $SHELL - <<'EOF'
 
    configure_asterisk() {
       pushd "$ASTERISK_SRC"
-      ./configure --prefix=/opt/serval
+      ./configure --prefix="$TARGET"
       popd
    }
 
@@ -156,7 +156,7 @@ sudo -E -u serval $SHELL - <<'EOF'
    configure_serval_dna() {
       pushd serval-dna
       autoconf
-      ./configure --prefix=/opt/serval
+      ./configure --prefix="$TARGET"
       popd
    }
 
