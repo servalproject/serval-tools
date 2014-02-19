@@ -1,0 +1,508 @@
+#!/bin/bash
+
+# Serval Project OpenWRT release maker
+# Copyright 2014 Serval Project Inc.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+usage() {
+   echo "\
+Usage: $ME \\
+          [-q|--quiet] [-D|--debug] [--force] [--commit] [--push] [--] \\
+          <openwrt-branch> \\
+          [ <repository-url>=<refspec> ... ]
+
+<openwrt-branch> is the name of the branch within the Serval Project's
+'openwrt-packages' repository on which the new release is to be made.
+
+This script works on a local clone of the Serval Project's 'openwrt-packages'
+repository, in the directory given by \$SERVAL_OPENWRT_PACKAGES_REPO, or, if
+unset, in $DEFAULT_OPENWRT_PACKAGES_DIR
+
+If the local clone does not exist, then creates it using 'git clone', otherwise
+updates it using 'git fetch'.  Checks out the given <openwrt-branch> branch and
+brings it up to date using 'git merge --ff-only'.
+
+Then, for each <repository-url>=<refspec> argument:
+ - <repository-url> may be a relative or absolute local path or a full Git
+   repository url (as accepted by 'git clone');
+ - this script makes a local clone of the repository, checks out the given
+   <refspec> as the working copy;
+ - if <refspec> is a tag within the clone, then that <tag> is used as the source
+   version, otherwise <refspec> is resolved to a commit's <sha1>
+ - computes <version-string> by invoking the 'version_string.sh' executable in
+   the clone, if it exists, otherwise using 'git describe' on the clone;
+ - searches the clone's working copy for all OpenWRT Makefiles whose URL matches
+   the given URL
+ - if any matching Makefile already has uncommitted local modifications, then
+   fails unless the --force option was given, in which case discards the local
+   modifications;
+ - updates each matching Makefile as follows:
+      PKG_VERSION := <version-string>
+      PKG_SOURCE_VERSION := <tag> or <sha1>
+      PKG_RELEASE is incremented by one
+
+After all <repository-url>=<refspec> arguments have been processed, if the
+--commit option is given then the updated Makefiles are committed to the clone.
+If the --push option is given (and the working copy is clean) then the clone is
+pushed back to its GitHub origin.
+"
+}
+
+see_usage() {
+   echo "Try '$ME --help' for more information."
+}
+
+ORIG_PWD="$PWD"
+ME="${0##*/}"
+STEM="${ME%.*}"
+export STEM
+if [ "$0" = "$ME" ]; then
+   MYDIR="."
+else
+   MYDIR="${0%/*}"
+fi
+
+export TMP="${TMPDIR:-/tmp}/$STEM"
+DEFAULT_OPENWRT_PACKAGES_DIR="$TMP/openwrt-packages"
+OPENWRT_PACKAGES_DIR="${SERVAL_OPENWRT_PACKAGES_REPO:-DEFAULT_OPENWRT_PACKAGES_DIR}"
+OPENWRT_PACKAGES_URL="git@github.com:servalproject/openwrt-packages.git"
+
+opt_debug=false
+opt_quiet=false
+opt_quiet_arg=
+opt_force=false
+opt_commit=false
+opt_push=false
+while [ $# -ne 0 ]; do
+   case "$1" in
+   --) shift; break;;
+   -h|--help ) usage; exit 0;;
+   -D|--debug) opt_debug=true;;
+   -q|--quiet) opt_quiet=true; opt_quiet_arg=--quiet;;
+   -f|--force) opt_force=true;;
+   --commit) opt_commit=true;;
+   --push) opt_push=true;;
+   -*) echo "$ME: unrecognised option: $1" >&2; see_usage >&2; exit 1;;
+   *) break;;
+   esac
+   shift
+done
+
+if [ $# -eq 0 ]; then
+   see_usage >&2
+   exit 1
+fi
+BRANCH="$1"
+shift
+
+exec 5>&1
+
+__fence_start=$LINENO
+
+# Return the BASH_SOURCE and BASH_LINENO of the closest function call stack
+# frame whose line number lies outside the fence.
+__whence() {
+   local i
+   for ((i = 1;
+         i < ${#BASH_LINENO[*]} - 1 && BASH_LINENO[i] > __fence_start && BASH_LINENO[i] < __fence_end;
+         ++i))
+   do
+      :
+   done
+   if [ -n "$1" ]; then eval $1='${BASH_SOURCE[$i+1]}'; fi
+   if [ -n "$2" ]; then eval $2='${BASH_LINENO[$i]}'; fi
+   if [ -n "$3" ]; then eval $3='${FUNCNAME[$i+1]}'; fi
+}
+
+echo_lineno() {
+   local L
+   __whence '' L ''
+   echo "$L:" "$@"
+}
+
+echo_verbose() {
+   if $opt_debug; then
+      echo_lineno "$@" >&5
+   elif ! $opt_quiet; then
+      echo "$@" >&5
+   fi
+}
+
+echo_debug() {
+   if $opt_debug; then
+      echo_lineno "$@" >&5
+   fi
+}
+
+fatal() {
+   local status=1
+   if [[ $# -gt 1 && "$1" =~ ^[0-9]+$ ]]; then
+      status=$1
+      shift
+   elif [[ $# -gt 1 && "x$1" = 'x-' ]]; then
+      status=
+      shift
+   fi
+   if $opt_debug; then
+      echo_lineno "FATAL ERROR: $@" >&5
+   fi
+   echo "$ME: FATAL ERROR: $*" >&2
+   [ -z "$status" ] || exit $status
+}
+
+run_or_fail() {
+   if ! "$@"; then
+      echo_lineno "FAILED: $*" >&2
+      exit 1
+   fi
+}
+
+run_verbose() {
+   echo_verbose "+ $@"
+   run_or_fail "$@"
+}
+
+run_debug() {
+   echo_debug "+ $@" >&5
+   run_or_fail "$@"
+}
+
+assert() {
+   if "$@"; then
+      :
+   else
+      echo_lineno "assertion failed: $*" >&2
+      exit 255
+   fi
+}
+
+__fence_end=$LINENO
+
+set -e
+
+# Ensure that $REPO really is a local Git repository.  Convert $REPO into
+# absolute path.
+check_repository() {
+   if ! run_debug cd "$REPO" >/dev/null || ! run_debug git status >/dev/null; then
+      fatal 2 "$REPO is not a Git repository"
+   fi
+   REPO="$PWD"
+   echo_debug "REPO=$REPO"
+}
+
+# Ensure that the $REFSPEC commit exists in $REPO.  Set REF_SHA1.
+check_refspec() {
+   run_debug cd "$REPO" >/dev/null
+   if ! REF_SHA1=$(run_debug git rev-parse --verify "$REFSPEC^{commit}"); then
+      fatal 3 "commit '$REFSPEC' not found"
+   fi
+   echo_debug "REFSPEC=$REFSPEC --> REF_SHA1=$REF_SHA1"
+}
+
+# Create temporary working directory.  The temporary working directory
+# persists after our invocation, so that downloads (git clones) do not
+# have to be repeated from scratch on every invocation.
+create_tmp() {
+   [ -d "$TMP" ] || run_verbose mkdir "$TMP" || true
+}
+
+clone_openwrt_packages() {
+   if [ ! -d "$OPENWRT_PACKAGES_DIR/.git" ]; then
+      if [ -d "$OPENWRT_PACKAGES_DIR" ]; then
+         if ! run_verbose rmdir "$OPENWRT_PACKAGES_DIR"; then
+            fatal 4 "directory is not a Git repository: $OPENWRT_PACKAGES_DIR"
+         fi
+      elif [ -e "$OPENWRT_PACKAGES_DIR" ]; then
+         fatal 4 "not a directory: $OPENWRT_PACKAGES_DIR"
+      fi
+      run_verbose git clone $opt_quiet_arg "$OPENWRT_PACKAGES_URL" "$OPENWRT_PACKAGES_DIR"
+      run_verbose cd "$OPENWRT_PACKAGES_DIR" >/dev/null
+   else
+      run_verbose cd "$OPENWRT_PACKAGES_DIR" >/dev/null
+      run_verbose git fetch $opt_quiet_arg --prune origin
+   fi
+   assert [ -d .git ]
+}
+
+checkout_openwrt_packages() {
+   assert [ "$PWD" == "$OPENWRT_PACKAGES_DIR" ]
+   run_verbose git checkout $opt_quiet_arg "$BRANCH"
+}
+
+# This will fail if there are any local modifications in the working copy that
+# conflict with changes that have just been fetched.
+update_openwrt_packages_branch() {
+   assert [ "$PWD" == "$OPENWRT_PACKAGES_DIR" ]
+   run_verbose git merge $opt_quiet_arg --ff-only origin/"$BRANCH"
+}
+
+# Find all of $REPO's remote GitHub Serval repositories, and set NREMOTE,
+# REMOTE_LABELS[] and REMOTE_URLS[].
+find_github_remotes() {
+   # Discover all of $REPO's remote GitHub Serval repositories, transforming all
+   # URLs to HTTPS form.
+   run_debug cd "$REPO" >/dev/null
+   local remotes="$(run_debug git config --get-regex 'remote\..*\.url')"
+   REMOTE_LABELS=()
+   REMOTE_URLS=()
+   while read option url; do
+      case "$url" in
+      https://github.com/servalproject/*.git)
+         ;;
+      git@github.com:servalproject/*.git)
+         ;;
+      *)
+         continue
+         ;;
+      esac
+      local label="${option#remote.}"
+      label="${label%.url}"
+      REMOTE_LABELS+=("$label")
+      REMOTE_URLS+=("$url")
+   done <<<"$remotes"
+   NREMOTE=${#REMOTE_LABELS[*]}
+   for ((i = 0; i < NREMOTE; ++i)); do
+      echo_debug "found remote ${REMOTE_LABELS[$i]} ${REMOTE_URLS[$i]}"
+   done
+}
+
+# Fail if $REPO does not have exactly one remote GitHub Serval repository.  Set
+# REPO_REMOTE to its remote label (eg, "origin"), REPO_NAME to its name (eg,
+# "serval-dna" and REPO_URL to its HTTPS URL (eg,
+# "https://github.com/servalproject/serval-dna.git").
+select_single_github_remote() {
+   if ((NREMOTE < 1)); then
+      fatal 4 "$REPO has no GitHub Serval remotes"
+   fi
+   if ((NREMOTE > 1)); then
+      fatal 4 "$REPO has too many ($NREMOTE) GitHub Serval remotes"
+   fi
+   REPO_REMOTE="${REMOTE_LABELS[0]}"
+   REPO_NAME="${REMOTE_URLS[0]##*/}"
+   REPO_NAME="${REPO_NAME%.git}"
+   REPO_URL="https://github.com/servalproject/$REPO_NAME.git"
+}
+
+# Ensure that the $REFSPEC commit has been pushed to $REPO's Github Serval
+# remote repository.
+ensure_refspec_pushed() {
+   run_debug cd "$REPO" >/dev/null
+   # List all remotes (by label) to which $REFSPEC has been pushed.  (The "git
+   # branch" command will print errors and exit with status 255 if any remote
+   # repository does not have a 'HEAD' branch, which is normally the case with
+   # GitHub hosted repositories, so its error messages are sent to /dev/null.)
+   if ! run_debug git branch --remotes --contains "$REF_SHA1" 2>/dev/null |
+        grep --quiet "^ *$REPO_REMOTE/"
+   then
+      fatal 5 "$REFSPEC (${REF_SHA1:0:7}) has not been pushed to $REPO_URL"
+   fi
+}
+
+# If $REFSPEC is a tag of $REPO, then use that as the source version, otherwise
+# use the commit's SHA1 id.  Set REF_TAG_OR_SHA1 and REF_ABBREV.
+ref_tag_or_sha1() {
+   run_verbose cd "$REPO" >/dev/null
+   local tag
+   tag="$(run_debug git tag --points-at="$REF_SHA1" | fgrep -x -e "$REFSPEC")"
+   if [ -n "$tag" ]; then
+      # Annotated tags have a different SHA1 id than the commit they point to.
+      tag_sha1=$(run_debug git rev-parse --verify "$REFSPEC^{tag}" 2>/dev/null) || tag_sha1="$REF_SHA1"
+      if run_verbose git ls-remote --tags "$REPO_REMOTE" |
+            fgrep --quiet -x -e "$tag_sha1	refs/tags/$REFSPEC"
+      then
+         REF_TAG_OR_SHA1="$REFSPEC"
+         REF_ABBREV="$REFSPEC"
+      else
+         fatal 6 "tag '$REFSPEC' (${tag_sha1:0:7}) has not been pushed to $REPO_URL"
+      fi
+   else
+      REF_TAG_OR_SHA1="$REF_SHA1"
+      REF_ABBREV="${REF_SHA1:0:7}"
+   fi
+}
+
+# Clone $REPO locally and check out $REFSPEC.
+clone_repository() {
+   assert [ -n "$REPO_NAME" ]
+   if [ -e "$TMP/clone-$REPO_NAME" ]; then
+      run_verbose rm -rf "$TMP/clone-$REPO_NAME"
+   fi
+   run_verbose git clone $opt_quiet_arg --local --shared "$REPO" "$TMP/clone-$REPO_NAME"
+   run_verbose cd "$TMP/clone-$REPO_NAME" >/dev/null
+   run_verbose git checkout --quiet "$REFSPEC"
+}
+
+# Compute the version string of the given commit.  If the given commit
+# of the repository contains an executable 'version_string.sh' file,
+# then invoke it with no arguments, and if the output is a single word,
+# then use that.  Otherwise, invoke the Serval Tools sp-version-string
+# script.
+compute_version_string() {
+   assert [ "$PWD" == "$TMP/clone-$REPO_NAME" ]
+   VERSION_STRING=
+   if [ -x version_string.sh ]; then
+      VERSION_STRING="$(run_debug ./version_string.sh)"
+   fi
+   if [ $(wc -w <<<"$VERSION_STRING") -ne 1 ]; then
+      echo_verbose "$REFSPEC:version_string.sh returned malformed version string: $VERSION_STRING"
+      if [ -x "$MYDIR/sp-version-string" ]; then
+         echo_verbose "falling back to $MYDIR/sp-version-string"
+         VERSION_STRING="$(run_debug "$MYDIR/sp-version-string")"
+      elif type -p sp-version-string >/dev/null; then
+         echo_verbose "falling back to sp-version-string"
+         VERSION_STRING="$(run_debug sp-version-string)"
+      else
+         echo_verbose "falling back to git describe"
+         version_tag_glob='[0-9].[0-9]*'
+         VERSION_STRING="$(run_debug git describe --match="$version_tag_glob" $refspec)"
+      fi
+      if [ $(wc -w <<<"$VERSION_STRING") -ne 1 ]; then
+         fatal 7 "got malformed version string: $VERSION_STRING"
+      fi
+   fi
+   echo_debug "VERSION_STRING=$VERSION_STRING"
+}
+
+# Find all makefiles whose SOURCE_URL matches $REPO's URL, and ensure that they
+# are not modified in the working copy.  Edit each Makefile to update its
+# version string and Git download commit ref.
+edit_openwrt_makefile() {
+   run_verbose cd "$OPENWRT_PACKAGES_DIR" >/dev/null
+   local updated=false
+   for makefile in $(run_debug find . -type f -name Makefile); do
+      makefile="${makefile#./}"
+      mf_repo_url="$(sed -n -e '/^PKG_SOURCE_URL[ \t]*:=[ \t]*/{s///;s/[ \t]*$//;p}' "$makefile")"
+      if [ "$mf_repo_url" = "$REPO_URL" ]; then
+         if [ $(run_debug git status --porcelain -- "$makefile" | wc -l) -ne 0 ]; then
+            if $opt_force; then
+               if run_debug git diff --unified=0 --no-color | grep '^[+\-]PKG_SOURCE_URL\>'
+               then
+                  fatal 8 "openwrt-packages/$makefile has a modified PKG_SOURCE_URL -- cannot proceed"
+               fi
+               # Clean up the working copy and the index.
+               run_debug git checkout $opt_quiet_arg HEAD -- "$makefile"
+               run_debug git add -- "$makefile"
+            else
+               fatal 8 "openwrt-packages/$makefile is already modified"
+            fi
+         fi
+         release=$(sed -n -e '/^PKG_RELEASE[ \t]*:\?=/s///p' "$makefile")
+         sed -i \
+            -e '/^PKG_VERSION[ \t]*:\?=/s/=.*/='"$VERSION_STRING"'/' \
+            -e '/^PKG_SOURCE_VERSION[ \t]*:\?=/s/=.*/='"$REF_TAG_OR_SHA1"'/' \
+            "$makefile"
+         if [ $(run_debug git diff --ignore-all-space HEAD -- "$makefile" | wc -l) -ne 0 ]; then
+            echo_verbose "update openwrt-packages/$makefile:
+PKG_VERSION        = $VERSION_STRING
+PKG_SOURCE_VERSION = $REF_TAG_OR_SHA1
+PKG_RELEASE        = $((release+1))  (was $release)\
+"
+            sed -i -e '/^PKG_RELEASE[ \t]*:\?=/s/=.*/='"$((release+1))"'/' "$makefile"
+            updated=true
+         else
+            echo_verbose "$makefile is already at $VERSION_STRING ($REF_TAG_OR_SHA1)"
+         fi
+      fi
+   done
+   if ! $updated; then
+      echo_verbose "No Makefiles found in branch '$BRANCH' for $REPO_URL"
+   fi
+}
+
+# The commit message is formed from the changes in the altered Makefiles, so
+# that the --commit option can be used by itself after a series of releases
+# have made several modifications to the same working copy.
+commit_openwrt_packages() {
+   run_verbose cd "$OPENWRT_PACKAGES_DIR" >/dev/null
+   local changed diff pkg_name pkg_version pkg_source_version
+   local message=
+   changed="$(run_debug git diff --ignore-all-space --name-only HEAD)"
+   while read makefile; do
+      diff="$(run_debug git diff --unified=0 --no-color --ignore-all-space HEAD -- "$makefile")"
+      if grep --quiet '^+PKG_VERSION\>' <<<"$diff" >/dev/null ||
+         grep --quiet '^+PKG_SOURCE_VERSION\>' <<<"$diff" >/dev/null
+      then
+         pkg_name="$(sed -n -e '/^PKG_NAME[ \t]*:\?=[ \t]*/s///p' "$makefile")"
+         pkg_version="$(sed -n -e '/^PKG_VERSION[ \t]*:\?=[ \t]*/s///p' "$makefile")"
+         message="${message:+$message, }$pkg_name $pkg_version"
+      fi
+   done <<<"$changed"
+   if [ -z "$message" ]; then
+      echo_verbose "No changes to commit"
+   elif [ "$(git branch --no-color | sed -n -e '/^\* /s///p')" != "$BRANCH" ]; then
+      fatal "Current branch is not '$BRANCH'"
+   else
+      run_verbose git add .
+      run_verbose git commit $opt_quiet_arg -m "Release $message"
+   fi
+}
+
+push_openwrt_packages() {
+   run_verbose cd "$OPENWRT_PACKAGES_DIR" >/dev/null
+   run_verbose git push $opt_quiet_arg origin "$BRANCH"
+}
+
+freeze() {
+   for var; do
+      echo -n " $var='${!var//'/'\\''}'"
+   done
+   echo
+}
+
+if [ $# -ne 0 ]; then
+   STATE=()
+   for arg; do
+      case "$arg" in
+      *=*)
+         REPO="${arg%=*}"
+         REFSPEC="${arg##*=}"
+         ;;
+      *)
+         fatal - "invalid argument: $arg"
+         see_usage >&2
+         exit 1
+         ;;
+      esac
+      run_debug cd "$ORIG_PWD" >/dev/null
+      run_debug check_repository
+      run_debug check_refspec
+      run_debug find_github_remotes
+      run_debug select_single_github_remote
+      run_debug ensure_refspec_pushed
+      run_debug ref_tag_or_sha1
+      frozen="$(freeze REPO REFSPEC REF_SHA1 REPO_REMOTE REPO_NAME REPO_URL REF_TAG_OR_SHA1 REF_ABBREV)"
+      echo_debug "$frozen"
+      STATE+=("$frozen")
+   done
+   run_debug create_tmp
+   run_debug clone_openwrt_packages
+   run_debug checkout_openwrt_packages
+   run_debug update_openwrt_packages_branch
+   for ((argi = 0; argi < ${#STATE[*]}; ++argi)); do
+      frozen="${STATE[$argi]}"
+      echo_debug "$frozen"
+      eval "$frozen"
+      run_debug clone_repository
+      run_debug compute_version_string
+      run_debug edit_openwrt_makefile
+   done
+fi
+if $opt_commit; then
+   run_debug commit_openwrt_packages
+fi
+if $opt_push; then
+   run_debug push_openwrt_packages
+fi
