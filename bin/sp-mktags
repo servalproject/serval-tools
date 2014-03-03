@@ -147,7 +147,7 @@ cd "$git_root" >/dev/null || exit 1
 mktags
 
 if $opt_all; then
-   for path in $(git submodule foreach --quiet echo '$path'); do
+   for path in $(git submodule foreach --quiet 'echo $path'); do
       (
          cd "$path" >/dev/null || exit 1
          mktags "$path"
