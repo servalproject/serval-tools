@@ -111,7 +111,7 @@ if [ $# -eq 0 ]; then
       # List the contents of all the submodules within the current repository.
       export _prefix="${git_subroot:+$git_subroot/}"
       cd "$git_subroot_abs" || exit $?
-      git submodule foreach --quiet --recursive git ls-files $git_options '|' 'path="$path/"' awk \''{ print ENVIRON["_prefix"] ENVIRON["path"] $0 }'\' #'
+      git submodule foreach --quiet --recursive 'git ls-files $git_options | path="$path/" awk '\''{ print ENVIRON["_prefix"] ENVIRON["path"] $0 }'\'
       git_subpath=
       # If the outermost Git repository is not the current one, then list its
       # contents and the contents of all of its submodules, excluding the one
@@ -123,7 +123,7 @@ if [ $# -eq 0 ]; then
          cd "$git_root_abs" >/dev/null || exit $?
          git ls-files $git_options >"$tmp-f" || exit $?
          awk '{ print ENVIRON["_prefix"] $0 }' "$tmp-f"
-         git submodule foreach --quiet --recursive echo '$path/' |
+         git submodule foreach --quiet --recursive 'echo $path/' |
             while read path; do
                if [ -z "$git_subpath" -o "${path#$git_subpath}" = "$path" ]; then
                   (
