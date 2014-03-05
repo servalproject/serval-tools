@@ -36,6 +36,13 @@ repository as determined by the current working directory.
 * [sp-exclude-directories](doc/sp-exclude-directories.md) is a simple filter
   that removes all lines that name a directory
 
+The following utilities are used to automate various Serval Project processes,
+such as testing, releasing, etc.:
+
+* [sp-openwrt-release](doc/sp-openwrt-release.md) releases new versions of
+  Serval Project repositories that are already available as OpenWRT packages,
+  by updating the package's Makefile in the [Serval OpenWRT feed][]
+
 The following utility is a general-purpose script for migrating issues from a
 Mantis bug tracker to the GitHub Issues list of any GitHub repository:
 
@@ -67,3 +74,4 @@ in Canberra from January 28 to February 5.
 
 
 [Serval Project]: http://www.servalproject.org
+[Serval OpenWRT feed]: https://github.com/servalproject/openwrt-packages
