@@ -46,23 +46,27 @@ Update an existing package
 
 To release a newer version of an existing package, you must first:
 
- 1. choose which feed branch (denoted `FEEDBRANCH` below) you want to update
-    (see the [Serval OpenWRT feed][] README);
+ *  choose which feed branch (denoted FEEDBRANCH below) you want to release
+    it on (see the [Serval OpenWRT feed][] README);
 
- 2. [Git clone][] the Serval repository which the package builds (an existing
-    clone will serve, as [sp-openwrt-release][] does not modify it); the path
-    to this clone's root directory is denoted `REPOPATH` below;
+ *  have a [Git clone][] of the Serval repository you want to release (an
+    existing clone will serve, as [sp-openwrt-release][] does not modify it);
+    the path to this clone's root directory is denoted REPOPATH below;
 
- 3. ensure that the clone has its GitHub origin as one of its [Git remotes][];
+ *  ensure that the clone has its GitHub origin as one of its [Git remotes][]
+    (this is always the case for repositories that have been cloned directly from
+    GitHub);
 
- 4. choose the [Git revision][] (denoted `REV` below) which you wish to
-    release;
+ *  choose the [Git revision][] of REPOPATH (denoted REV below) which you
+    wish to release;
 
- 5. ensure the revision has been [pushed][Git push] to GitHub.
+ *  ensure the revision REV has been [pushed][Git push] to GitHub.
 
 The [sp-openwrt-release][] script does NOT support specifying a package by name
 or Makefile path, because if more than one package builds from the same source
-repository, they must all be updated at once, to avoid inconsistencies.
+repository, they must all be updated at once, to avoid inconsistencies.  The only
+way of specifying which package(s) to release is by the Git repository that the
+package downloads and builds.
 
 To perform the release, issue the command:
 
@@ -70,10 +74,16 @@ To perform the release, issue the command:
     ...
     $
 
+For example:
+
+    $ sp-openwrt-release --push --commit development ~/src/serval-dna=devlopment
+    ...
+    $
+
 As the logged output will show, this will perform the following operations:
 
- 1. checks that REV names a valid revision that has already been [pushed][Git
-    push] to GitHub,
+ 1. checks that REV names a valid revision that has already been [pushed][Git push]
+    to GitHub,
 
  2. [fetches][Git fetch] the [Serval OpenWRT feed][] repository then [checks
     out][Git checkout] the FEEDBRANCH branch and [fast forwards][Git merge] the
@@ -120,6 +130,7 @@ More information
 [Serval OpenWRT feed]: https://github.com/servalproject/openwrt-packages
 [Serval DNA]: https://github.com/servalproject/serval-dna
 [Batphone]: https://github.com/servalproject/batphone
+[Serval Mesh]: http://developer.servalproject.org/dokuwiki/doku.php?id=content:servalmesh:
 [Serval Mesh release procedure]: http://developer.servalproject.org/dokuwiki/doku.php?id=content:servalmesh:release:
 [Serval DNA build instructions for OpenWRT]: https://github.com/servalproject/serval-dna/blob/development/doc/OpenWRT.md
 [OpenWRT build system]: http://wiki.openwrt.org/about/toolchain
@@ -127,6 +138,7 @@ More information
 [Bash]: http://en.wikipedia.org/wiki/Bash_(Unix_shell)
 [Bash startup file]: http://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files.html
 [Git]: http://git-scm.com/
+[Git describe]: http://git-scm.com/docs/git-describe
 [Git remotes]: http://gitref.org/remotes/
 [Git revision]: http://git-scm.com/book/en/Git-Tools-Revision-Selection
 [Git clone]: http://git-scm.com/docs/git-clone
