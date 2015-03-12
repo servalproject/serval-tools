@@ -51,19 +51,8 @@ Mantis bug tracker to the GitHub Issues list of any GitHub repository:
 Vim Git plugin
 --------------
 
-The *gitdiff.vim* plugin for the *vim*(1) editor provides easy access to
-the Git commit history of any file being edited and easy shortcuts for opening
-diff windows to reveal changes.
-
-To use the plugin, check out the **serval-tools** repository somewhere (eg,
-into /usr/local/serval-tools) and add its *vim* directory to your Vim runtime
-path, eg, by putting the following line into your $HOME/.vimrc:
-
-    set runtimepath=~/.vim,/usr/local/serval-tools/vim,$VIMRUNTIME,/usr/local/serval-tools/vim/after,~/.vim/after
-
-The [plugin file](vim/plugin/gitdiff.vim) itself contains a block comment at
-the top describing the keymappings that it provides.  The author plans to
-create a Vim help file for the plugin soon.
+The *gitdiff.vim* plugin for the *vim*(1) editor has been superseded by the
+[delta.vim](https://github.com/quixotique/vim-delta) plugin.
 
 Linux.conf.au 2013
 ------------------
