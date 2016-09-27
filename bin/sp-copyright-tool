@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
 # vim: sw=4 sts=4 et fileencoding=utf8 nomod
 
 # Serval Project source code copyright and license reporting utility
@@ -22,8 +22,8 @@
 # parsing, via the docopt module.
 
 '''Usage:
-    sp-copyright-tool [options] summarise <sourcefile>...
-    sp-copyright-tool [options] condense <sourcefile>...
+    sp-copyright-tool [--output=FILE] [--debug] summarise <sourcefile>...
+    sp-copyright-tool [--output=FILE] [--debug] condense <sourcefile>...
     sp-copyright-tool -h | --help
     sp-copyright-tool --version
 Options:
@@ -50,7 +50,7 @@ def main():
     import docopt
     opts = docopt.docopt(__doc__, version=myversion)
     if opts['--output']:
-        sys.stdout = file(opts['--output'], 'w')
+        sys.stdout = file(opts['--output'][0], 'w')
     if opts['summarise']:
         summarise(copyrights(opts['<sourcefile>']), show_paths=True)
     if opts['condense']:
@@ -105,7 +105,7 @@ def summarise(copyrights, show_paths=False):
     h, z = copyrights
     pathyears = defaultdict(int)
     for holder, years in h.iteritems():
-        pathyears[holder] = sum(len(paths) for paths in years.itervalues())
+        pathyears[holder] = max(years), sum(len(paths) for paths in years.itervalues())
     portions = 'Portions ' if len(h) > 1 or z else ''
     for holder in sorted(h, key=pathyears.__getitem__, reverse=True):
         years = h[holder]
