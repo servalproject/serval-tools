@@ -1,7 +1,8 @@
 #!/bin/sh
 
 # Serval Project filter utility
-# Copyright 2012 Andrew Bettison
+# Copyright 2012 Serval Project Inc.
+# Copyright 2016 Flinders University
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -21,4 +22,13 @@
 # Filter out names of existing directories from stdin.  Assumes one name per
 # line.
 
-tr '\n' '\000' | xargs -0 stat -c '%F:%n' | sed -e '/^directory:/d' -e 's/^[^:]*://'
+case $(stat -c '%F:%n' / 2>/dev/null) in
+directory:/)
+   # We have GNU stat(1).
+   tr '\n' '\000' | xargs -0 stat -c '%F:%n' | sed -e '/^directory:/d' -e 's/^[^:]*://'
+   ;;
+*)
+   # Assume BSD stat(1).
+   tr '\n' '\000' | xargs -0 stat -f '%HT:%N' | sed -e '/^Directory:/d' -e 's/^[^:]*://'
+   ;;
+esac
