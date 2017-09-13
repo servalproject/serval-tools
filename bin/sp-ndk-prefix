@@ -1,0 +1,147 @@
+#!/bin/sh
+
+# Serval Project Android NDK development file prefix selector
+# Copyright 2017 Flinders University
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+usage() {
+   echo "Usage: ${0##*/} PATH
+
+Prints the path to the prefix directory containing the Android NDK development
+files (arch-*/include/* and arch-*/lib/*).  Chooses the platform (ABI level) by
+searching the directory that contains PATH and upward through all its parent
+directories:
+
+- if there is an app/build.gradle file that configures targetSdkVersion, then
+  uses that ABI version
+- otherwise, if there is a project.properties file that contains a target=,
+  setting, then that ABI version
+- otherwise no prefix directory is printed
+
+If there is no NDK package for the chosen ABI version, then prints the prefix of
+the highest available NDK ABI version that is equal to or below that target
+version is used; this is according to the rules described in
+https://developer.android.com/ndk/guides/stable_apis.html
+"
+}
+
+while [ $# -ne 0 ]; do
+   case "$1" in
+   --) shift; break;;
+   --help ) usage; exit 0;;
+   -*) echo "${0##*/}: unsupported option: $1" >&2; usage >&2; exit 1;;
+   *) break;;
+   esac
+done
+
+case $# in
+0) echo "${0##*/}: missing argument" >&2; usage >&2; exit 1;;
+1) ;;
+*) shift; echo "${0##*/}: spurious arguments: $*" >&2; usage >&2; exit 1;;
+esac
+
+path="$1"
+
+traverse_directories_up_to_root() {
+   local dir="${1?}"
+   shift
+   while ! [ -d "$dir" ]; do
+      dir="${dir%/*}"
+   done
+   (
+      cd "$dir" || return 1
+      local output
+      while :; do
+         if output="$("$@")" && [ -n "$output" ]; then
+            echo "$PWD"
+            echo "$output"
+            return 0
+         fi
+         [ "$PWD" = / ] && return 1
+         cd .. || return 1
+      done
+   )
+}
+
+find_in_parent_directory() {
+   FOUND=
+   OUTPUT=
+   if result="$(traverse_directories_up_to_root "$@")"; then
+      local save_IFS="$IFS"
+      IFS='
+      '
+      set -- $result
+      IFS="$save_IFS"
+      FOUND="${1?}"
+      OUTPUT="${2?}"
+      return 0
+   fi
+   return 1
+}
+
+extract_gradle_target_sdk_version() {
+   sed -n -e 's/^[ 	]*targetSdkVersion[ 	]\+\([0-9]\+\)[ 	]*$/\1/p' app/build.gradle 2>/dev/null
+}
+
+extract_ant_target_sdk_version() {
+   sed -n -e '/^target=/s///p' project.properties 2>/dev/null
+}
+
+decrement_version() {
+   local var="$1"
+   local pre=$(eval echo "\$$var" | sed -ne 's/^\(.*[^0-9]\)[0-9].*$/\1/p')
+   local n=$(eval echo "\$$var" | sed -ne 's/^\(.*[^0-9]\)\?\([0-9][0-9]*\).*$/\2/p')
+   local post=$(eval echo "\$$var" | sed -ne 's/^.*[0-9]\(.*\)$/\1/p')
+   [ -z "$n" -o $n -le 0 ] && return 1
+   eval $var="\$pre\$((\$n-1))\$post"
+   return 0
+}
+
+ndk_dir="$(type ndk-build)"
+case "$ndk_dir" in
+'ndk-build is /'*)
+   ndk_dir="${ndk_dir#ndk-build is }"
+   ndk_dir="${ndk_dir%/ndk-build}"
+   ;;
+*)
+   echo "${0##*/}: ndk-build not found in \$PATH" >&2
+   exit 2
+   ;;
+esac
+
+if find_in_parent_directory "$path" extract_gradle_target_sdk_version; then
+   target="android-$OUTPUT"
+elif find_in_parent_directory "$path" extract_ant_target_sdk_version; then
+   target="$OUTPUT"
+else
+   echo "${0##*/}: no app/build.gradle or project.properties file found" >&2
+   exit 3
+fi
+
+try_target="$target"
+while [ -n "$try_target" ]; do
+   target_dir="$ndk_dir/platforms/$try_target"
+   test_file="usr/include/android/api-level.h"
+   set -- "$target_dir/arch-"*"/$test_file"
+   if [ -r "$1" ]; then
+      echo "$target_dir"
+      return 0 # bingo
+   fi
+   decrement_version try_target || break
+done
+
+echo "${0##*/}: no NDK platform for $target or lower" >&2
+exit 4

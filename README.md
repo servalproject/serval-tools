@@ -34,6 +34,10 @@ repository as determined by the current working directory.
 * [sp-mktags](doc/sp-mktags.md) generates **tags** and **cscope.out** index
   files for the current Git working copy
 
+* [sp-ndk-prefix](doc/sp-ndk-prefix.md) prints the path prefix of the NDK
+  development files, if any, for the configured ABI target of the Android
+  project containing a given path
+
 * [sp-exclude-directories](doc/sp-exclude-directories.md) is a simple filter
   that removes all lines that name a directory
 
