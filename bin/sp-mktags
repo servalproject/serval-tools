@@ -125,7 +125,7 @@ trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
 
 mktags() {
    echo "$PWD"
-   sp-ls-files >"$tmp-f"
+   sp-git-ls-all-files >"$tmp-f"
    grep '\.[ch]$' "$tmp-f" >"$tmp-c"
    grep '\.java$' "$tmp-f" >"$tmp-j"
    if [ -s "$tmp-c" -a -n "$ndk_include" ]; then

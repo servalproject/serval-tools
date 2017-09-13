@@ -1,0 +1,176 @@
+#!/bin/sh
+
+# Serval Project Git source file list utility
+# Copyright 2012 Serval Project Inc.
+# Copyright 2017 Flinders University
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+# A wrapper around git ls-files that crosses submodule boundaries.
+
+usage() {
+   echo "\
+Usage: ${0##*/} [-S|--submodules] [--no-submodules] [-git-option ...] [--] [path]
+Options:
+   -S, --submodules  run 'git ls-files' in all submodule repos contained
+                     recursively within the outermost Git repo
+   --no-submodules   run 'git ls-files' only in the identified git repo(s)
+                     [default]
+   -git-option       passed directly to 'git ls-files'
+   --help            print this message and exit
+Args:
+   path              identifies the Git repo in which to run 'git ls-files'
+                     as that which contains the given path [default '.']
+"
+}
+
+opt_submodules=false
+git_options=
+while [ $# -ne 0 ]
+do
+   case "$1" in
+   --help) usage; exit 0;;
+   --submodules|-S) opt_submodules=true; shift;;
+   --no-submodules) opt_submodules=false; shift;;
+   -*) git_options="$git_options $1"; shift;;
+   --) shift; break;;
+   *) break;;
+   esac
+done
+
+case $# in
+0) repo_path=;;
+1) repo_path="${1%/}";;
+*) shift
+   echo "${0##*/}: excess arguments: $*" >&2
+   echo "Try \`${0##*/} --help' for more information" >&2
+   exit 1
+   ;;
+esac
+
+# Find all enclosing Git repos of the given path (file or directory), from
+# innermost (probably a submodule) to outermost.
+find_git_roots() {
+   (
+      relative=false
+      case "$1" in
+      --relative) relative=true; shift;;
+      esac
+      if [ $# -ne 0 ]; then
+         if [ -d "$1" ]; then
+            cd "$1" >/dev/null || exit 1
+         else
+            case "$1" in
+            */*) cd "${1%/*}" >/dev/null || exit 1;;
+            esac
+         fi
+      fi
+      REL=
+      while [ "$PWD" != / ]; do
+         if is_git_root; then
+            if $relative; then echo "${REL:-.}"; else echo "$PWD"; fi
+         fi
+         REL="$REL${REL:+/}.."
+         cd .. >/dev/null || exit 1
+      done
+   )
+}
+
+is_git_root() {
+   [ -r "${1:-.}/.git/config" ] && return 0
+   case $(cat "${1:-.}/.git" 2>/dev/null) in
+   gitdir:*) return 0;;
+   esac
+   return 1
+}
+
+join_path() {
+   local __joined=
+   local __path
+   for __path; do
+      case "$__path" in
+      /*) __joined="$__path";;
+      *) while : ; do
+            case "$__joined" in
+            '') break;;
+            */./) __joined="${__joined%./}";;
+            *//) __joined="${__joined%/}";;
+            */) break;;
+            *) __joined="$__joined/";;
+            esac
+         done
+         __joined="$__joined$__path"
+         ;;
+      esac
+   done
+   echo "$__joined"
+}
+
+tmp="/tmp/${0##*/}-$$"
+trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
+
+# First list all the files in the identified Git repo, whether or not it is a
+# submodule of another.
+git_root_abs=$(find_git_roots "${repo_path:-.}" | sed -n '1p')
+if [ -z "$git_root_abs" ]; then
+   echo "${0##*/}: not in any Git repo: ${repo_path:-.}" >&2
+   exit 1
+fi
+git_root_rel=$(find_git_roots --relative "${repo_path:-.}" | sed -n '1p')
+export _prefix="$(join_path "$repo_path" "$git_root_rel" '')"
+(
+   cd "$git_root_abs" || exit $?
+   git ls-files $git_options | awk '{ print ENVIRON["_prefix"] $0 }'
+)
+
+# Then, if the --submodules option was given:
+# (1) list all the files in all submodules of the identified Git repo;
+# (2) list all the files in all submodules of the outermost Git repo, excluding
+#     all the files just listed in the identified repo and all submodules of the
+#     identified repo.
+if $opt_submodules; then
+   # List the contents of all the submodules beneath the identified Git repo.
+   (
+      cd "$git_root_abs" || exit $?
+      git submodule foreach --quiet --recursive 'export path; git ls-files $git_options | awk '\''{ print ENVIRON["_prefix"] ENVIRON["path"] "/" $0 }'\'
+   )
+   # If the outermost Git repository is not the identified one, then list its
+   # contents and the contents of all of its submodules, excluding the one
+   # we started in and its descendents.
+   git_root_outermost_abs=$(find_git_roots "$repo_path" | sed -n '$p')
+   git_root_outermost_rel=$(find_git_roots --relative "$repo_path" | sed -n '$p')
+   if [ "$git_root_abs" != "$git_root_outermost_abs" ]; then
+      git_subpath="${git_root_abs#$git_root_outermost_abs}"
+      git_subpath="${git_subpath#/}/"
+      export _prefix="$(join_path "$repo_path" "$git_root_outermost_rel" '')"
+      (
+         cd "$git_root_outermost_abs" >/dev/null || exit $?
+         git ls-files $git_options . >"$tmp-f" || exit $?
+         awk '{ print ENVIRON["_prefix"] $0 }' "$tmp-f"
+         git submodule foreach --quiet --recursive 'echo $path' |
+            while read path; do
+               if [ "${path#$git_subpath}" = "$path" ]; then
+                  (
+                     export path
+                     cd "$path" || exit $?
+                     git ls-files $git_options . | awk '{ print ENVIRON["_prefix"] ENVIRON["path"] "/" $0 }'
+                  ) || exit $?
+               fi
+            done
+      )
+   fi
+fi
+
+exit 0

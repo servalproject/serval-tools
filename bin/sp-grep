@@ -1,7 +1,8 @@
 #!/bin/sh
 
 # Serval Project source code search utility
-# Copyright 2012 Andrew Bettison
+# Copyright 2012 Serval Project Inc.
+# Copyright 2017 Flinders University
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -41,7 +42,7 @@ done
 tmp="/tmp/${0##*/}-$$"
 trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
 
-if sp-ls-files -S | egrep -e "$filerexp" >"$tmp-f"; then
+if sp-git-ls-all-files -S | egrep -e "$filerexp" >"$tmp-f"; then
    cat "$tmp-f" |
       sp-exclude-directories |
       tr '\n' '\000' |

@@ -1,6 +1,6 @@
 serval-tools
 ============
-[Serval Project][], March 2014
+[Serval Project][], September 2017
 
 Tools that the [Serval Project][] uses to develop its software.
 
@@ -21,14 +21,15 @@ submodules.  They make no assumptions about the layout of source code Git
 repositories.  They all act on the current directory and the current Git
 repository as determined by the current working directory.
 
-* [sp-ls-files](doc/sp-ls-files.md) is a wrapper around **git ls-files** that
-  handles submodules
+* [sp-git-ls-all-files](doc/sp-git-ls-all-files.md) is a wrapper around **git
+  ls-files** that lists all the Git-tracked files in a repo, and optionally in
+  its submodules and in the repo(s) of which it is itself a submodule
 
 * [sp-find](doc/sp-find.md) is a wrapper around the standard *find*(1) utility
   that excludes files ignored by Git
 
-* [sp-grep](doc/sp-grep.md) searches all files in the current Git working copy
-  and its submodules
+* [sp-grep](doc/sp-grep.md) performs a *grep*(1) over all the files returned
+  by *sp-git-ls-all-files*
 
 * [sp-mktags](doc/sp-mktags.md) generates **tags** and **cscope.out** index
   files for the current Git working copy

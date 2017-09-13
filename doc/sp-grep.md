@@ -3,8 +3,8 @@ sp-grep
 
 Searches all files in the current outermost enclosing Git repository for a
 given pattern, analogous to the **find -type f | xargs grep** idiom, except
-that it uses *sp-ls-files --submodules* instead of *find*(1).  All arguments
-are passed directly to the `grep` command.  For more information:
+that it uses *sp-git-ls-all-files --submodules* instead of *find*(1).  All
+arguments are passed directly to the `grep` command.  For more information:
 
     sp-grep --help
 

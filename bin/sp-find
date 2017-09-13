@@ -1,7 +1,8 @@
 #!/bin/sh
 
 # Serval Project Git find(1) wrapper
-# Copyright 2012 Andrew Bettison
+# Copyright 2012 Serval Project Inc.
+# Copyright 2017 Flinders University
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -36,6 +37,6 @@ do
 	esac
 done
 
-sp-ls-files --submodules --exclude-standard --other --directory --ignored >"$tmp-1"
+sp-git-ls-all-files --submodules --exclude-standard --other --directory --ignored >"$tmp-1"
 [ $# -eq 0 ] && set -- -print
 find $dirs ! \( \( -type d -name .git $(sed -e "s/^/-o -samefile /" "$tmp-1") \) -prune \) -a \( "$@" \)
