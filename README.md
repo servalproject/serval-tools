@@ -26,7 +26,7 @@ repository as determined by the current working directory.
   its submodules and in the repo(s) of which it is itself a submodule
 
 * [sp-find](doc/sp-find.md) is a wrapper around the standard *find*(1) utility
-  that excludes files ignored by Git
+  which excludes files that are ignored by Git
 
 * [sp-grep](doc/sp-grep.md) performs a *grep*(1) over all the files returned
   by *sp-git-ls-all-files*
@@ -37,6 +37,9 @@ repository as determined by the current working directory.
 * [sp-ndk-prefix](doc/sp-ndk-prefix.md) prints the path prefix of the NDK
   development files, if any, for the configured ABI target of the Android
   project containing a given path
+
+* [sp-find-gcc-headers](doc/sp-find-gcc-headers.md) prints the paths of all the
+  header files that are included by a given GCC command line
 
 * [sp-exclude-directories](doc/sp-exclude-directories.md) is a simple filter
   that removes all lines that name a directory

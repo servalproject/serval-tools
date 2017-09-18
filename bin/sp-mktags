@@ -50,15 +50,73 @@ esac
 
 # Check if ctags(1) command is present.
 have_ctags=false
-if ctags --version >/dev/null 2>&1; then
-   have_ctags=true
-fi
+probe_ctags() {
+   if ctags --version >/dev/null 2>&1; then
+      have_ctags=true
+   fi
+}
+
+# Check if etags(1) command is present.
+have_etags=false
+probe_etags() {
+   if etags --version >/dev/null 2>&1; then
+      have_etags=true
+   fi
+}
 
 # Check if cscope(1) command is present.
 have_cscope=false
-if cscope -V >/dev/null 2>&1; then
-   have_cscope=true
-fi
+probe_cscope() {
+   if cscope -V >/dev/null 2>&1; then
+      have_cscope=true
+   fi
+}
+
+# Check if GNU make(1) command is present.
+have_gnu_make=false
+probe_gnu_make() {
+   local exe="${1:-make}"
+   gnu_make=
+   case $("$exe" --version 2>/dev/null) in
+   'GNU Make '*)
+      have_gnu_make=true
+      gnu_make="$exe"
+      ;;
+   esac
+}
+
+has_make_target() {
+   local target="${1?}"
+   $have_gnu_make || return 2
+   "$gnu_make" --question --print-data-base 2>/dev/null | grep -q "^$target:"
+}
+
+invoke_gnu_make() {
+   local target="${1?}"
+   if ! has_make_target "$target"; then
+      echo "   GNU make: '$target' target not supported"
+      return 1
+   fi
+   "$gnu_make" --question "$target" >/dev/null 2>/dev/null
+   case $? in
+   0)
+      echo "   GNU make: '$target' is up-to-date"
+      ;;
+   1)
+      echo "   GNU make: building '$target'"
+      "$gnu_make" --silent "$target"
+      ;;
+   *)
+      echo "   GNU make: error querying '$target'"
+      ;;
+   esac
+   return 0
+}
+
+probe_ctags
+probe_etags
+probe_cscope
+probe_gnu_make make || probe_gnu_make gmake
 
 cd "$path" || exit $?
 
@@ -80,23 +138,42 @@ tmp="/tmp/${0##*/}-$$"
 trap 'stat=$?; rm -f "$tmp"*; exit $stat' 0 1 2 15
 
 mktags() {
+   # Attempt to use GNU Make to create/update the 'tags' and 'cscope.out' files.
+   # If neither succeeds, then fall back to a built-in process to generate these
+   # two files.
    echo "$PWD"
-   sp-git-ls-all-files >"$tmp-f"
-   grep '\.[ch]$' "$tmp-f" >"$tmp-c"
-   grep '\.java$' "$tmp-f" >"$tmp-j"
-   if [ -s "$tmp-c" ] && ndk_prefix="$(sp-ndk-prefix .)"; then
-      ndk_include="$ndk_prefix/arch-arm/usr/include"
-      echo "   find header files in $ndk_include"
-      find "$ndk_include" -type f -name '*.h' >>"$tmp-c"
+   local done=false
+   if has_make_target tags-am; then
+      # Looks like an automake Makefile, which uses etags(1) for the 'tags'
+      # target, and provides a separate 'ctags' target that uses ctags(1).  If
+      # exuberant-ctags is installed, then use it.
+      if $have_etags; then
+         invoke_gnu_make tags && done=true
+      elif $have_ctags; then
+         invoke_gnu_make ctags && done=true
+      fi
+   else
+      invoke_gnu_make tags && done=true
+      invoke_gnu_make cscope.out && done=true
    fi
-   cat "$tmp-c" "$tmp-j" >"$tmp-cj"
-   if $have_ctags; then
-      echo "   ctags:" $(cat "$tmp-cj" | wc -l) files
-      ctags -L "$tmp-cj" -f tags --tag-relative=yes
-   fi
-   if $have_cscope && [ -s "$tmp-c" ]; then
-      echo "   cscope:" $(cat "$tmp-c" | wc -l) files
-      cscope -fcscope.out -b -i"$tmp-c"
+   if ! $done; then
+      sp-git-ls-all-files >"$tmp-f"
+      grep '\.[ch]$' "$tmp-f" >"$tmp-c"
+      grep '\.java$' "$tmp-f" >"$tmp-j"
+      if [ -s "$tmp-c" ] && ndk_prefix="$(sp-ndk-prefix .)"; then
+         ndk_include="$ndk_prefix/arch-arm/usr/include"
+         echo "   find header files in $ndk_include"
+         find "$ndk_include" -type f -name '*.h' >>"$tmp-c"
+      fi
+      cat "$tmp-c" "$tmp-j" >"$tmp-cj"
+      if $have_ctags; then
+         echo "   ctags:" $(cat "$tmp-cj" | wc -l) files
+         ctags -L "$tmp-cj" -f tags --tag-relative=yes --c-kinds=defgmpstuv
+      fi
+      if $have_cscope && [ -s "$tmp-c" ]; then
+         echo "   cscope:" $(cat "$tmp-c" | wc -l) files
+         cscope -fcscope.out -b -i"$tmp-c"
+      fi
    fi
 }
 
