@@ -3,6 +3,7 @@
 
 # Serval Project source code copyright and license reporting utility
 # Copyright 2013 Serval Project, Inc.
+# Copyright 2017 Flinders University
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -22,19 +23,17 @@
 # parsing, via the docopt module.
 
 '''Usage:
-    sp-copyright-tool [--output=FILE] [--debug] summarise <sourcefile>...
-    sp-copyright-tool [--output=FILE] [--debug] condense <sourcefile>...
+    sp-copyright-tool [--output=FILE] summarise <sourcefile>...
+    sp-copyright-tool [--output=FILE] condense <sourcefile>...
     sp-copyright-tool -h | --help
     sp-copyright-tool --version
 Options:
     -h --help               Show this message
     --version               Show version and exit
-    -D --debug              Enable debug logging
     -o, --output=FILE       Write output to FILE instead of standard output
 
-The config file is in INI format.  It contains user names and passwords in the
-clear so it is ignored unless owned by the caller and permissions are at most
-0600.
+If <sourcefile>... is - then the list of source files is read from standard
+input, one per line.
 '''
 
 myname = 'sp-copyright-tool'
@@ -50,7 +49,7 @@ def main():
     import docopt
     opts = docopt.docopt(__doc__, version=myversion)
     if opts['--output']:
-        sys.stdout = file(opts['--output'][0], 'w')
+        sys.stdout = file(opts['--output'], 'w')
     if opts['summarise']:
         summarise(copyrights(opts['<sourcefile>']), show_paths=True)
     if opts['condense']:
@@ -78,6 +77,8 @@ _re_copyright_notice = re.compile(
 def copyrights(paths):
     h = defaultdict(lambda: defaultdict(list))
     z = set()
+    if paths == ['-']:
+        paths = [line.rstrip('\n') for line in sys.stdin]
     for path in paths:
         body = file(path).read()
         has_copyright_notice = False
