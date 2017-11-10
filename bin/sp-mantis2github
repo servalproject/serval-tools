@@ -101,8 +101,8 @@ import re
 def main():
     logging.basicConfig(level=logging.INFO)
     logging.getLogger('suds').setLevel(logging.CRITICAL)
-    sys.path.append(os.path.join(serval_tools_root(), "python/docopt"))
-    sys.path.append(os.path.join(serval_tools_root(), "python/PyGithub"))
+    sys.path.insert(0, os.path.join(serval_tools_root(), "python/docopt"))
+    sys.path.insert(0, os.path.join(serval_tools_root(), "python/PyGithub"))
     import docopt
     import github
     cx = Context()

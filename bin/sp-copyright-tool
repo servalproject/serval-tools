@@ -45,7 +45,7 @@ import re
 from collections import defaultdict
 
 def main():
-    sys.path.append(os.path.join(serval_tools_root(), "python/docopt"))
+    sys.path.insert(0, os.path.join(serval_tools_root(), "python/docopt"))
     import docopt
     opts = docopt.docopt(__doc__, version=myversion)
     if opts['--output']:
