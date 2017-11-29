@@ -152,14 +152,13 @@ if $opt_submodules; then
    git_root_outermost_abs=$(find_git_roots "$repo_path" | sed -n '$p')
    git_root_outermost_rel=$(find_git_roots --relative "$repo_path" | sed -n '$p')
    if [ "$git_root_abs" != "$git_root_outermost_abs" ]; then
-      git_subpath="${git_root_abs#$git_root_outermost_abs}"
-      git_subpath="${git_subpath#/}/"
+      git_subpath="${git_root_abs#$git_root_outermost_abs/}"
       export _prefix="$(join_path "$repo_path" "$git_root_outermost_rel" '')"
       (
          cd "$git_root_outermost_abs" >/dev/null || exit $?
          git ls-files $git_options . >"$tmp-f" || exit $?
          awk '{ print ENVIRON["_prefix"] $0 }' "$tmp-f"
-         git submodule foreach --quiet --recursive 'echo $path' |
+         git submodule foreach --quiet --recursive 'echo "$path"' |
             while read path; do
                if [ "${path#$git_subpath}" = "$path" ]; then
                   (
